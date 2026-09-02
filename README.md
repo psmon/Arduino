@@ -80,7 +80,7 @@ venv\Scripts\python -m pip install -r requirements.txt
 |---|---|
 | **`hello_lcd/`** | GC9A01 화면에 `HELLO` 출력 — 기본 동작 확인 |
 | **`ble_lcd/`** | BLE Nordic UART Service(NUS) 서버. 폰/PC에서 보낸 UTF-8 문자열을 원형 화면에 표시. 한글은 U8g2 유니폰트(`u8g2_font_unifont_t_korean1`)로 렌더링. **Huge APP 파티션 필요** |
-| **`ble_pc/`** | PC(Windows)에서 BLE로 글자를 보내는 Python 도구(`bleak`)<br>· `send_ble.py "text"` — 한 번 전송 / 인자 없으면 대화식<br>· `greet.py` — 7개국 인사말 연속 전송(폰트 커버리지 테스트) |
+| **`ble_pc/`** | PC(Windows)에서 BLE로 글자를 보내는 Python 도구(`bleak`)<br>· `send_ble.py "text"` — 한 번 전송 / 인자 없으면 대화식<br>· `greet.py` — 7개국 인사말 연속 전송(폰트 커버리지 테스트)<br>· `ascii_art.py` — 자유 텍스트 · ASCII 아트 · 표정/스피너/바운스 애니메이션 |
 
 ### ble_pc 사용 예
 ```powershell
