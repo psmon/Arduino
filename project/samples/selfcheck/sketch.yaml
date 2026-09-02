@@ -1,0 +1,15 @@
+# arduino-cli 빌드 프로파일 (Waveshare ESP32-S3-LCD-1.28)
+# 빌드+업로드: arduino-cli compile --upload -p COM6 project/samples/selfcheck
+# 셀프체크:    powershell -File project/samples/selfcheck/selfcheck.ps1 -Port COM6
+# CDCOnBoot 없음 -> Serial 이 UART0(CH343/COM)로 나가 selfcheck.ps1 이 읽을 수 있음
+profiles:
+  esp32s3:
+    notes: Waveshare ESP32-S3-LCD-1.28 (post-deploy self-check / smoke test)
+    fqbn: esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M
+    platforms:
+      - platform: esp32:esp32 (3.3.11)
+        platform_index_url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+    libraries:
+      - GFX Library for Arduino (1.6.7)
+
+default_profile: esp32s3
