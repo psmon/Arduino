@@ -18,13 +18,28 @@ python project\samples\claude_hud\pc\demo.py http://192.168.1.50:8080
 → 화면이 진행(활동)↔사용량으로 갱신되면 파이프라인 정상.
 
 ## 3. Claude Code 에 연결 (statusline + hooks)
-`pc\hooks.snippet.json` 내용을 **`~/.claude/settings.json`** 에 병합한다.
-- `statusLine` → model/cost/context/rate_limits 를 `/status` 로 (사용량 화면)
-- `hooks` → 도구 사용/프롬프트/턴 종료를 `/event` 로 (진행 화면)
+**먼저 백업**: `copy "%USERPROFILE%\.claude\settings.json" "%USERPROFILE%\.claude\settings.json.bak"`
 
-`python` 이 PATH에 없으면 명령의 `python` 을 전체 경로나 `py` 로 바꾼다.
-병합 후 Claude Code를 재시작하면, 이후 매 응답마다 statusline이, 매 도구 사용마다 hook이
-디바이스로 전송한다.
+### 3a. 기존 statusLine 이 없는 경우 (새 설정)
+`pc\hooks.snippet.json` 내용을 `~/.claude/settings.json` 에 병합.
+- `statusLine` → statusline.py 가 model/cost/context/rate_limits 를 `/status` 로 (사용량 화면)
+- `hooks` → send_event.py 가 도구/프롬프트/턴 종료를 `/event` 로 (진행 화면)
+
+### 3b. 이미 다른 statusLine/HUD 를 쓰는 경우 (래핑 — 권장)
+기존 statusLine 을 **덮어쓰지 말고 감싼다**. `pc\statusline_wrapper.ps1` 이 기존 HUD 라인을
+그대로 출력하면서 같은 JSON 을 디바이스로도 전송한다(fire 후 짧은 타임아웃).
+1. `statusline_wrapper.ps1` 안의 기존 HUD 명령줄(예: `node az-hud-wrapper.js ...`)을 본인 것으로 맞춘다.
+2. settings.json 의 `statusLine.command` 를
+   `powershell -NoProfile -File "C:\...\pc\statusline_wrapper.ps1"` 로 바꾼다.
+3. hooks 는 **각 이벤트의 `hooks` 배열에 send_event.py 항목을 추가**(기존 항목 유지):
+   ```json
+   { "type":"command", "command":"python",
+     "args":["C:\\...\\pc\\send_event.py"], "timeout":5, "async":true }
+   ```
+
+`python` 이 PATH에 없으면 `python` 을 전체 경로나 `py` 로 바꾼다.
+병합 후 **Claude Code 재시작**하면 이후 매 응답/도구사용마다 디바이스로 전송된다.
+여러 세션이 동시에 돌면 session_id 로 구분되어 디바이스에 종합 표시된다.
 
 ## 4. 실제 statusline JSON 스키마 확인 (필드 검증)
 `statusline.py` 는 받은 원본 JSON을 `~/.claude/hud_statusline_last.json` 에 저장한다.

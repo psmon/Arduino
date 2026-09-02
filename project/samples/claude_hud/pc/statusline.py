@@ -10,7 +10,23 @@
 # 디바이스 주소는 환경변수 CLAUDE_HUD_URL 로 지정 (기본 http://claude-hud.local:8080)
 import sys, os, json, time, urllib.request
 
-URL = os.environ.get("CLAUDE_HUD_URL", "http://claude-hud.local:8080")
+
+def resolve_url():
+    u = os.environ.get("CLAUDE_HUD_URL")
+    if u:
+        return u.rstrip("/")
+    try:
+        p = os.path.join(os.path.expanduser("~"), ".claude", "hud_url.txt")
+        with open(p, encoding="utf-8") as f:
+            v = f.read().strip()
+            if v:
+                return v.rstrip("/")
+    except Exception:
+        pass
+    return "http://claude-hud.local:8080"
+
+
+URL = resolve_url()
 
 
 def num(x, d=0.0):
@@ -25,7 +41,7 @@ def post(path, obj):
         data = json.dumps(obj).encode("utf-8")
         req = urllib.request.Request(URL + path, data=data,
                                      headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=1.5)
+        urllib.request.urlopen(req, timeout=0.7)
     except Exception:
         pass  # statusline 은 절대 막히면 안 됨
 
@@ -51,7 +67,15 @@ def main():
     cw = d.get("context_window") or {}
     ctx_used = cw.get("used_percentage", 0)
 
-    payload = {"model": model, "cost_usd": num(cost), "context_used_pct": num(ctx_used)}
+    payload = {"model": model, "cost_usd": num(cost), "context_used_pct": num(ctx_used),
+               "session": d.get("session_id", "")}
+
+    # 친근한 라벨: repo 이름 > 작업폴더 이름
+    ws = d.get("workspace") or {}
+    repo0 = ws.get("repo") or {}
+    label = repo0.get("name") or os.path.basename(str(ws.get("current_dir") or d.get("cwd") or ""))
+    if label:
+        payload["label"] = label[:13]
 
     def reset_in(node):
         r = node.get("resets_at")

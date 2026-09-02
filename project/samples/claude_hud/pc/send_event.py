@@ -8,7 +8,23 @@
 # 디바이스 주소: 환경변수 CLAUDE_HUD_URL (기본 http://claude-hud.local:8080)
 import sys, os, json, urllib.request
 
-URL = os.environ.get("CLAUDE_HUD_URL", "http://claude-hud.local:8080")
+
+def resolve_url():
+    u = os.environ.get("CLAUDE_HUD_URL")
+    if u:
+        return u.rstrip("/")
+    try:
+        p = os.path.join(os.path.expanduser("~"), ".claude", "hud_url.txt")
+        with open(p, encoding="utf-8") as f:
+            v = f.read().strip()
+            if v:
+                return v.rstrip("/")
+    except Exception:
+        pass
+    return "http://claude-hud.local:8080"
+
+
+URL = resolve_url()
 
 TYPE_MAP = {
     "UserPromptSubmit": "prompt_start",
@@ -25,7 +41,7 @@ def post(path, obj):
         data = json.dumps(obj).encode("utf-8")
         req = urllib.request.Request(URL + path, data=data,
                                      headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=1.5)
+        urllib.request.urlopen(req, timeout=0.7)
     except Exception:
         pass
 
@@ -58,8 +74,9 @@ def main():
     else:
         msg = ev
 
-    post("/event", {"type": t, "tool": tool, "target": target,
-                    "msg": msg, "session": d.get("session_id", "")})
+    label = os.path.basename(str(d.get("cwd") or ""))[:13]
+    post("/event", {"type": t, "tool": tool, "target": target, "msg": msg,
+                    "session": d.get("session_id", ""), "label": label})
 
 
 if __name__ == "__main__":
