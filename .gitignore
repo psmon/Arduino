@@ -1,0 +1,15 @@
+# Python virtualenv / cache
+ble_pc/venv/
+__pycache__/
+*.pyc
+
+# Arduino build artifacts
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# OS
+Thumbs.db
+.DS_Store
