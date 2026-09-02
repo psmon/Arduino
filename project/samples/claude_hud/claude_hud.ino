@@ -10,6 +10,9 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include "CST816S.h"   // 터치(제스처) 컨트롤러
+#include <U8g2lib.h>   // 한글 유니폰트 (u8g2_font_unifont_t_korean1)
 #include <Arduino_GFX_Library.h>
 #include "secrets.h"   // WIFI_SSID, WIFI_PASS  (gitignore)
 
@@ -20,18 +23,35 @@
 #define LCD_RST 14
 #define LCD_BL 2
 
+// CST816S 터치 (I2C 6/7 는 IMU 와 공유), TP_RST=13, TP_INT=5
+#define TP_SDA 6
+#define TP_SCL 7
+#define TP_RST 13
+#define TP_INT 5
+
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
 #define FW_NAME "claude_hud"
-#define FW_VER "A2"
+#define FW_VER "B3"
+
+#define SCREEN_SESSIONS 0
+#define SCREEN_USAGE    1
+#define SCREEN_SETTINGS 2
 
 #define MAX_SESSIONS 6
 #define SESSION_TTL_MS 180000UL   // 3분 동안 소식 없으면 슬롯 회수
 #define SESSION_IDLE_MS 45000UL   // 45초 지나면 idle 취급
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI, GFX_NOT_DEFINED);
-Arduino_GFX *gfx = new Arduino_GC9A01(bus, LCD_RST, 0, true);
+Arduino_GFX *panel = new Arduino_GC9A01(bus, LCD_RST, 0, true);
+// 더블버퍼: PSRAM 프레임버퍼에 그린 뒤 flush() 로 한 번에 push -> 깜박임 없음
+Arduino_Canvas *gfx = new Arduino_Canvas(240, 240, panel);
 WebServer server(HTTP_PORT);
+CST816S touch(TP_SDA, TP_SCL, TP_RST, TP_INT);
+
+int  brightness = 255;              // 백라이트 PWM (0-255)
+bool touchActive = false;           // 첫 터치 후 자동순환 중지
+bool touchOk = false;
 
 // ---- 세션별 상태 ----
 struct Session {
@@ -63,6 +83,11 @@ bool dirty = true;
 static void copyStr(char *dst, size_t n, const char *src) {
   if (!src) { dst[0] = 0; return; }
   strncpy(dst, src, n - 1); dst[n - 1] = 0;
+}
+
+void setBrightness(int v) {
+  if (v < 20) v = 20; if (v > 255) v = 255;
+  brightness = v; ledcWrite(LCD_BL, v);
 }
 
 // session_id 로 슬롯 찾기(없으면 새로/가장 오래된 것 회수)
@@ -160,8 +185,9 @@ void handleRoot() {
 }
 
 // ---------- 렌더 ----------
-void setFontSmall() { gfx->setFont((const GFXfont *)nullptr); gfx->setTextSize(1); }
-void setFontBig()   { gfx->setFont((const GFXfont *)nullptr); gfx->setTextSize(2); }
+// U8g2 유니폰트(한글+ASCII). 커서는 baseline 기준
+void setFontSmall() { gfx->setFont(u8g2_font_unifont_t_korean1); gfx->setTextSize(1); }
+void setFontBig()   { gfx->setFont(u8g2_font_unifont_t_korean1); gfx->setTextSize(2); }
 
 uint16_t stateColor(const char *st) {
   if (!strcmp(st, "tool") || !strcmp(st, "thinking") || !strcmp(st, "prompt_start")
@@ -182,49 +208,48 @@ void drawHeader(const char *title, uint16_t col) {
   gfx->drawCircle(120, 120, 118, col);
   gfx->drawCircle(120, 120, 117, col);
   setFontSmall(); gfx->setTextColor(0xFFFF);
-  gfx->setCursor(120 - (int)strlen(title) * 3, 30); gfx->print(title);
+  gfx->setCursor(120 - (int)strlen(title) * 4, 40); gfx->print(title);
 }
 
 void drawScreenSessions() {
   gfx->fillScreen(0x0000);
   drawHeader("SESSIONS", anyActive() ? 0x07E0 : 0xFBE0);
   uint32_t now = millis();
+  gfx->setTextWrap(false);
   setFontSmall(); gfx->setTextColor(0xC618);
-  gfx->setCursor(88, 44); gfx->printf("%d active", activeCount());
+  gfx->setCursor(76, 62); gfx->printf("%d active", activeCount());
 
-  int y = 62, shown = 0;
-  for (int i = 0; i < MAX_SESSIONS && shown < 5; i++) {
+  int y = 88, shown = 0;
+  for (int i = 0; i < MAX_SESSIONS && shown < 4; i++) {
     Session &s = sessions[i];
     if (!s.used) continue;
     bool idle = now - s.lastSeenMs > SESSION_IDLE_MS;
     uint16_t col = idle ? 0x8410 : stateColor(s.state);
-    // 라벨(굵게 색) + 활동(흰색)
+    char line[40]; snprintf(line, sizeof(line), "%s %s", s.label, s.activity);  // 한글 가능
     gfx->setTextColor(col);
-    gfx->setCursor(24, y); gfx->print(s.label);
-    gfx->setTextColor(0xFFFF);
-    char act[26]; snprintf(act, sizeof(act), "%s", s.activity);
-    gfx->setCursor(24, y + 10); gfx->print(act);
-    y += 28; shown++;
+    gfx->setCursor(18, y); gfx->print(line);
+    y += 24; shown++;
   }
   if (shown == 0) {
     setFontSmall(); gfx->setTextColor(0x8410);
-    gfx->setCursor(50, 115); gfx->print("no sessions yet");
+    gfx->setCursor(45, 120); gfx->print("no sessions yet");
   }
 }
 
-void drawBar(int top, const char *label, float pct, uint16_t col) {
-  int x = 45, w = 150, by = top + 11;
+void drawBar(int base, const char *label, float pct, uint16_t col) {
+  int x = 40, w = 160, by = base + 5;
   setFontSmall(); gfx->setTextColor(0xFFFF);
-  gfx->setCursor(x, top); gfx->printf("%s %d%%", label, (int)pct);
-  gfx->drawRect(x, by, w, 9, 0x8410);
+  gfx->setCursor(x, base); gfx->printf("%s %d%%", label, (int)pct);
+  gfx->drawRect(x, by, w, 8, 0x8410);
   int fill = (int)((w - 2) * (pct / 100.0f));
   if (fill < 0) fill = 0; if (fill > w - 2) fill = w - 2;
-  gfx->fillRect(x + 1, by + 1, fill, 7, col);
+  gfx->fillRect(x + 1, by + 1, fill, 6, col);
 }
 
 void drawScreenUsage() {
   gfx->fillScreen(0x0000);
   drawHeader("USAGE", 0x07FF);
+  gfx->setTextWrap(false);
   float totalCost = 0, maxCtx = 0; uint32_t now = millis(); int n = 0;
   for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].used) {
     totalCost += sessions[i].costUsd;
@@ -232,22 +257,45 @@ void drawScreenUsage() {
     if (now - sessions[i].lastSeenMs < SESSION_IDLE_MS) n++;
   }
   setFontBig(); gfx->setTextColor(0xFFE0);
-  gfx->setCursor(50, 58); gfx->printf("$%.3f", totalCost);
+  gfx->setCursor(48, 82); gfx->printf("$%.3f", totalCost);
   setFontSmall(); gfx->setTextColor(0xC618);
-  gfx->setCursor(92, 80); gfx->printf("%d sess", n);
-  drawBar(96, "ctx", maxCtx, 0x07E0);
+  gfx->setCursor(90, 104); gfx->printf("%d sess", n);
+  drawBar(128, "ctx", maxCtx, 0x07E0);
   if (lim.has) {
-    drawBar(128, "5h", lim.rl5hPct, 0xFD20);
-    drawBar(160, "7d", lim.rl7dPct, 0xF800);
+    drawBar(154, "5h", lim.rl5hPct, 0xFD20);
+    drawBar(180, "7d", lim.rl7dPct, 0xF800);
   } else {
     setFontSmall(); gfx->setTextColor(0x8410);
-    gfx->setCursor(45, 132); gfx->print("limits: n/a");
+    gfx->setCursor(45, 156); gfx->print("limits: n/a");
   }
 }
 
+void drawScreenSettings() {
+  gfx->fillScreen(0x0000);
+  drawHeader("SETTINGS", 0xC618);
+  gfx->setTextWrap(false);
+  setFontSmall(); gfx->setTextColor(0xFFFF);
+  int y = 66;
+  gfx->setCursor(22, y); gfx->printf("IP %s", WiFi.localIP().toString().c_str()); y += 20;
+  gfx->setCursor(22, y); gfx->printf("ver %s  %ddBm", FW_VER, WiFi.RSSI()); y += 20;
+  gfx->setCursor(22, y); gfx->printf("sess %d  up %lus", activeCount(), (unsigned long)(millis() / 1000)); y += 22;
+  gfx->setTextColor(0xFFE0);
+  gfx->setCursor(22, y); gfx->printf("bright %d%%", (brightness * 100) / 255);
+  int bx = 22, bw = 150, by = y + 6;
+  gfx->drawRect(bx, by, bw, 8, 0x8410);
+  gfx->fillRect(bx + 1, by + 1, (bw - 2) * brightness / 255, 6, 0xFFE0);
+  y = by + 22;
+  gfx->setTextColor(0x07FF);
+  gfx->setCursor(20, y); gfx->print("tap=bright  down=back"); y += 20;
+  gfx->setTextColor(0x8410);
+  gfx->setCursor(14, y); gfx->printf("http://%s", WiFi.localIP().toString().c_str());
+}
+
 void render() {
-  if (currentScreen == 0) drawScreenSessions();
-  else drawScreenUsage();
+  if (currentScreen == SCREEN_SESSIONS) drawScreenSessions();
+  else if (currentScreen == SCREEN_USAGE) drawScreenUsage();
+  else drawScreenSettings();
+  gfx->flush();   // 버퍼 -> 화면 (한 번에, 깜박임 없음)
 }
 
 // ---------- setup / loop ----------
@@ -255,6 +303,7 @@ void connectWiFi() {
   gfx->fillScreen(0x0000);
   setFontSmall(); gfx->setTextColor(0xFFFF);
   gfx->setCursor(30, 110); gfx->print("WiFi connecting...");
+  gfx->flush();
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) { delay(300); Serial.print("."); }
@@ -271,14 +320,30 @@ void connectWiFi() {
     gfx->setCursor(40, 120); gfx->print("WiFi FAILED");
     gfx->setCursor(20, 145); gfx->print("check secrets.h");
   }
+  gfx->flush();
   delay(2500);
 }
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH);
-  gfx->begin(); gfx->fillScreen(0x0000);
+  ledcAttach(LCD_BL, 5000, 8);          // 백라이트 PWM (pin, 5kHz, 8-bit)
+  setBrightness(brightness);
+  if (!gfx->begin()) Serial.println("[gfx] canvas begin FAILED (PSRAM?)");
+  gfx->setUTF8Print(true);   // 한글 UTF-8 렌더
+  gfx->fillScreen(0x0000);
   connectWiFi();
+
+  // 터치(CST816S) 초기화 + I2C 스캔(0x15 확인용)
+  Wire.begin(TP_SDA, TP_SCL);
+  Serial.println("[i2c] scan:");
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) Serial.printf("  found 0x%02X\n", a);
+  }
+  touch.begin();
+  touchOk = true;
+  Serial.println("[touch] CST816S begin (swipe L/R=screen, up=settings)");
+
   if (wifiOk) {
     if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", HTTP_PORT);
     server.on("/status", HTTP_POST, handleStatus);
@@ -295,6 +360,24 @@ void loop() {
   if (wifiOk) server.handleClient();
   uint32_t now = millis();
   expireSessions();
-  if (now - lastAutoSwitch > 6000) { currentScreen ^= 1; lastAutoSwitch = now; dirty = true; }
+
+  // 터치 제스처 (CST816S 가 제스처를 직접 보고)
+  if (touchOk && touch.available()) {
+    touchActive = true;
+    uint8_t g = touch.data.gestureID;
+    Serial.printf("[touch] gesture=%d x=%d y=%d\n", g, touch.data.x, touch.data.y);
+    if (currentScreen == SCREEN_SETTINGS) {
+      if (g == SWIPE_DOWN) currentScreen = SCREEN_SESSIONS;
+      else if (g == SINGLE_CLICK) setBrightness(touch.data.x < 120 ? brightness - 40 : brightness + 40);
+    } else {
+      if (g == SWIPE_LEFT || g == SWIPE_RIGHT) currentScreen ^= 1;   // 0<->1
+      else if (g == SWIPE_UP) currentScreen = SCREEN_SETTINGS;
+    }
+    dirty = true;
+  }
+
+  // 자동순환: 터치 조작 전에만 (터치하면 수동 모드로)
+  if (!touchActive && now - lastAutoSwitch > 6000) { currentScreen ^= 1; lastAutoSwitch = now; dirty = true; }
+
   if (dirty || now - lastRender > 1500) { render(); lastRender = now; dirty = false; }
 }

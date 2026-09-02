@@ -38,10 +38,17 @@ arduino-cli compile --upload -p COM6 --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,F
 - `pc/demo.py <url>` — 가짜 세션으로 두 화면 갱신 테스트(라이브 세션 불필요)
 - `pc/statusline.py`, `pc/send_event.py`, `pc/hooks.snippet.json`, `pc/setup.md` — 실제 연동
 
+## 화면 조작 (터치)
+- 좌/우 스와이프 = SESSIONS ↔ USAGE 전환
+- 아래→위 스와이프 = SETTINGS (IP/버전/세션수/밝기 + web 주소)
+- SETTINGS에서 좌/우 탭 = 밝기 조절, 아래로 스와이프 = 복귀
+- 설정 중 텍스트 입력(WiFi 등)은 브라우저(`http://<ip>:8080/`)에서 (예정)
+
 ## 상태 / 로드맵
-- **Phase A (현재)**: WiFi + HTTP 서버 + 2화면 자동순환 + `/health`. ✅ 컴파일 검증됨
-- **Phase B**: CST816S 터치 — 좌우 스와이프=화면 전환, 아래→위=설정
-- **Phase C**: 원호 게이지/스피너, 설정 화면, 밝기, 활동 히스토리
+- **Phase A**: WiFi + HTTP 서버 + 2화면 + `/health`. ✅
+- **Phase B**: CST816S 터치 제스처 + 설정화면 + **더블버퍼(무깜박임)** + **U8g2 한글 폰트**. ✅ 실기 검증됨
+- **다음(B2)**: 브라우저 설정 웹페이지(WiFi 등 텍스트 입력) + NVS 영구저장
+- **Phase C**: 원호 게이지/스피너, 활동 히스토리
 
 ## 메모
 - `rate_limits`(5h/7d)는 Pro/Max에서만 올 수 있음 → 없으면 cost+context%로 폴백.
