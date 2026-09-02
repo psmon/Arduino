@@ -17,3 +17,6 @@ Thumbs.db
 
 # JetBrains IDE
 .idea/
+
+# WiFi/secret credentials (per-sketch)
+secrets.h

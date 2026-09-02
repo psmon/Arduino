@@ -1,0 +1,27 @@
+{
+  "_comment": "이 조각을 ~/.claude/settings.json 에 병합하세요. python 경로가 안 잡히면 'python' 을 전체 경로나 'py' 로 바꾸세요. 디바이스 주소는 환경변수 CLAUDE_HUD_URL 로 지정(예: http://192.168.1.50:8080).",
+  "statusLine": {
+    "type": "command",
+    "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\statusline.py\""
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "python \"C:\\code\\psmon\\Arduino\\project\\samples\\claude_hud\\pc\\send_event.py\"" } ] }
+    ]
+  }
+}
