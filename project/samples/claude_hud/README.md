@@ -31,9 +31,13 @@ Claude Code (이 PC)
 ```powershell
 # WiFi(리모트) — 디바이스 IP
 pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url http://192.168.0.88:8080
-# USB(유선) — 디바이스가 붙은 COM 포트
+# USB(유선) — COM 포트 자동 검출 (권장, 컴퓨터마다 번호 다름)
+pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:auto
+# USB(유선) — 포트를 직접 지정
 pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:COM6
 ```
+> `serial:auto` 는 보드의 **CH343(WCH VID_1A86)** COM 포트를 자동으로 찾는다(`pc/find_port.ps1`).
+> 포트만 확인하려면: `pwsh -File pc/find_port.ps1`
 - 발신부(`send_event.ps1`, `hud_statusline.ps1`)를 `~/.claude/hud/`에 설치, `~/.claude/hud_url.txt`에 주소 기록
 - `settings.json`을 **백업(.hudbak) 후 병합** — 기존 statusLine은 래핑해 보존, hooks는 추가만(중복 방지, idempotent)
 - **의존성 없음**(PowerShell 내장). 적용하려면 Claude Code 재시작

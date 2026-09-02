@@ -17,6 +17,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# serial:auto / serial  -> CH343 COM 포트 자동 검출
+if ($Url -eq 'serial:auto' -or $Url -eq 'serial') {
+  $port = (& (Join-Path $PSScriptRoot 'find_port.ps1') | Select-Object -Last 1)
+  if (-not $port -or "$port" -notmatch '^COM\d+$') { throw "COM 포트 자동검출 실패 (find_port.ps1). USB/드라이버 확인." }
+  $Url = "serial:$("$port".Trim())"
+  Write-Host "[+] COM 자동검출 -> $Url"
+}
+
 $claude = Join-Path $env:USERPROFILE ".claude"
 $hud = Join-Path $claude "hud"
 New-Item -ItemType Directory -Force -Path $hud | Out-Null
