@@ -1,0 +1,15 @@
+# arduino-cli 빌드 프로파일 (Waveshare ESP32-S3-LCD-1.28)
+# 빌드:  arduino-cli compile project/samples/ble_lcd
+# 업로드: arduino-cli upload -p COM6 project/samples/ble_lcd
+profiles:
+  esp32s3:
+    notes: Waveshare ESP32-S3-LCD-1.28 (BLE + LCD, Huge APP partition)
+    fqbn: esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M,PartitionScheme=huge_app,CDCOnBoot=cdc
+    platforms:
+      - platform: esp32:esp32 (3.3.11)
+        platform_index_url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+    libraries:
+      - GFX Library for Arduino (1.6.7)
+      - U8g2 (2.37.1)
+
+default_profile: esp32s3
