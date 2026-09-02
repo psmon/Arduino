@@ -1,5 +1,6 @@
-# Python virtualenv / cache
-ble_pc/venv/
+# Python virtualenv / cache (any location)
+venv/
+.venv/
 __pycache__/
 *.pyc
 
