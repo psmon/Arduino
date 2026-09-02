@@ -93,39 +93,12 @@ venv\Scripts\python greet.py
 
 ## CLI 빌드/업로드 (arduino-cli) — IDE 없이
 
-IDE 대신 **arduino-cli**로 헤드리스 빌드/업로드가 가능하다. 이미 설치된 ESP32 코어와
-라이브러리(Arduino_GFX, U8g2)를 그대로 재사용한다.
-
-**설치** (둘 중 하나)
+IDE GUI 없이 **arduino-cli**로 헤드리스 빌드·업로드가 가능하다(검증됨). 이미 설치된
+ESP32 코어·라이브러리를 그대로 재사용한다. 설치·명령어 전체는 **[CLIBUILD.md](CLIBUILD.md)** 참고.
 ```powershell
-# A) 단독 설치 (권장): 최신 바이너리 받아 PATH에 둠
-#    https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Windows_64bit.zip
-# B) Arduino IDE 2.x 번들 사용:
-#    ...\WinGet\Packages\ArduinoSA.IDE.stable_*\resources\app\lib\backend\resources\arduino-cli.exe
+# hello_lcd 컴파일 + 업로드 (한 방)
+arduino-cli compile --upload -p COM6 --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M" project/samples/hello_lcd
 ```
-
-각 샘플에는 **`sketch.yaml` 프로파일**이 있어 보드 옵션·코어/라이브러리 버전이 고정돼 있다.
-
-**빠른 빌드(로컬 설치 재사용)** — FQBN 직접 지정
-```powershell
-# ble_lcd (BLE+LCD, Huge APP 파티션)
-arduino-cli compile --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M,PartitionScheme=huge_app,CDCOnBoot=cdc" project/samples/ble_lcd
-# hello_lcd
-arduino-cli compile --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M" project/samples/hello_lcd
-```
-
-**재현 빌드(프로파일)** — `sketch.yaml`의 고정 버전을 격리 환경에 받아 빌드 (최초 1회 느림)
-```powershell
-arduino-cli compile project/samples/ble_lcd     # default_profile 사용
-```
-
-**업로드 / 시리얼**
-```powershell
-arduino-cli upload -p COM6 --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M,PartitionScheme=huge_app,CDCOnBoot=cdc" project/samples/ble_lcd
-arduino-cli monitor -p COM6 -c baudrate=115200
-```
-> 업로드/모니터는 **COM 포트를 독점**한다. Arduino IDE의 Serial Monitor나 PC BLE 도구가
-> 켜져 있으면 먼저 닫을 것.
 
 ## 메모
 - BLE 통신·UTF-8은 **모든 언어 정상 전송**됨. 화면 표시는 폰트가 가진 글리프에 한함

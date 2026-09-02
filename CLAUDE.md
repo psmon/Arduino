@@ -43,7 +43,13 @@ change any, change both sides:
 
 ## Commands
 
-**Build/upload sketches:** Arduino IDE 2.x GUI (Open the `.ino`, pick board+port, Upload).
+**Build/upload sketches:** either the Arduino IDE 2.x GUI, or **headless via `arduino-cli`**
+(verified working — see `CLIBUILD.md` for the full command set). Fast path reuses the local
+core+libraries, e.g. compile+upload hello_lcd:
+`arduino-cli compile --upload -p COM6 --fqbn "esp32:esp32:esp32s3:PSRAM=enabled,FlashSize=16M" project/samples/hello_lcd`.
+`ble_lcd` needs `,PartitionScheme=huge_app,CDCOnBoot=cdc` appended to the FQBN.
+Each sketch also has a `sketch.yaml` profile, but profile builds pull libraries from the index —
+the manually-installed U8g2 (dev 2.37.1) is ahead of the index (2.36.19), so prefer the `--fqbn` path.
 If upload hangs at `Connecting...`, put the board in download mode: hold **BOOT**, tap **RESET**,
 release BOOT, upload again.
 
