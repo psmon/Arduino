@@ -32,7 +32,7 @@
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
 #define FW_NAME "claude_hud"
-#define FW_VER "B3"
+#define FW_VER "B4"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -361,19 +361,24 @@ void loop() {
   uint32_t now = millis();
   expireSessions();
 
-  // 터치 제스처 (CST816S 가 제스처를 직접 보고)
+  // 터치 제스처 (CST816S) — 한 스와이프가 이벤트를 여러 번 내므로 디바운스로
+  // "한 스와이프 = 한 번 반응". 실제 제스처(NONE 아님)일 때만 처리.
+  static uint32_t lastGestureMs = 0;
   if (touchOk && touch.available()) {
-    touchActive = true;
     uint8_t g = touch.data.gestureID;
-    Serial.printf("[touch] gesture=%d x=%d y=%d\n", g, touch.data.x, touch.data.y);
-    if (currentScreen == SCREEN_SETTINGS) {
-      if (g == SWIPE_DOWN) currentScreen = SCREEN_SESSIONS;
-      else if (g == SINGLE_CLICK) setBrightness(touch.data.x < 120 ? brightness - 40 : brightness + 40);
-    } else {
-      if (g == SWIPE_LEFT || g == SWIPE_RIGHT) currentScreen ^= 1;   // 0<->1
-      else if (g == SWIPE_UP) currentScreen = SCREEN_SETTINGS;
+    if (g != NONE && now - lastGestureMs > 400) {
+      lastGestureMs = now;
+      touchActive = true;
+      Serial.printf("[touch] gesture=%d x=%d y=%d\n", g, touch.data.x, touch.data.y);
+      if (currentScreen == SCREEN_SETTINGS) {
+        if (g == SWIPE_DOWN || g == SWIPE_UP) currentScreen = SCREEN_SESSIONS;
+        else if (g == SINGLE_CLICK) setBrightness(touch.data.x < 120 ? brightness - 40 : brightness + 40);
+      } else {
+        if (g == SWIPE_LEFT || g == SWIPE_RIGHT) currentScreen ^= 1;   // 0<->1
+        else if (g == SWIPE_UP) currentScreen = SCREEN_SETTINGS;
+      }
+      dirty = true;
     }
-    dirty = true;
   }
 
   // 자동순환: 터치 조작 전에만 (터치하면 수동 모드로)
