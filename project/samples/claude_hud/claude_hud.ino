@@ -32,7 +32,7 @@
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
 #define FW_NAME "claude_hud"
-#define FW_VER "B4"
+#define FW_VER "B5"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -57,6 +57,7 @@ bool touchOk = false;
 struct Session {
   bool used = false;
   char id[40]   = "";
+  char host[14] = "";       // 발신 머신 이름 (여러 대 구분)
   char label[14] = "";      // 프로젝트/폴더 이름 (친근한 라벨)
   char state[12] = "idle";  // idle/prompt/thinking/tool/tool_end/done/subagent
   char activity[48] = "";
@@ -128,13 +129,10 @@ int activeCount() {
   return n;
 }
 
-// ---------- HTTP 핸들러 ----------
-void handleStatus() {
-  String body = server.hasArg("plain") ? server.arg("plain") : "";
-  Serial.print("[/status] "); Serial.println(body);
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) { server.send(400, "text/plain", "bad json"); return; }
+// ---------- 상태 갱신 (HTTP/USB 공용) ----------
+void applyStatus(JsonDocument &doc) {
   Session *s = getSession(doc["session"] | "?");
+  if (doc["host"].is<const char*>())   copyStr(s->host, sizeof(s->host), doc["host"]);
   if (doc["label"].is<const char*>())  copyStr(s->label, sizeof(s->label), doc["label"]);
   if (doc["model"].is<const char*>())  copyStr(s->model, sizeof(s->model), doc["model"]);
   s->costUsd    = doc["cost_usd"]         | s->costUsd;
@@ -145,15 +143,12 @@ void handleStatus() {
     lim.rl7dPct = doc["rl7d_used_pct"] | 0.0f;  lim.rl7dResetIn = doc["rl7d_reset_in"] | 0;
   }
   s->lastSeenMs = millis();
-  dirty = true; server.send(200, "text/plain", "ok");
+  dirty = true;
 }
 
-void handleEvent() {
-  String body = server.hasArg("plain") ? server.arg("plain") : "";
-  Serial.print("[/event] "); Serial.println(body);
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) { server.send(400, "text/plain", "bad json"); return; }
+void applyEvent(JsonDocument &doc) {
   Session *s = getSession(doc["session"] | "?");
+  if (doc["host"].is<const char*>())  copyStr(s->host, sizeof(s->host), doc["host"]);
   if (doc["label"].is<const char*>()) copyStr(s->label, sizeof(s->label), doc["label"]);
   const char *type = doc["type"] | "";
   copyStr(s->state, sizeof(s->state), type);
@@ -164,7 +159,48 @@ void handleEvent() {
   }
   if (!strcmp(type, "prompt_start")) s->turnStartMs = millis();
   s->lastSeenMs = millis();
-  dirty = true; server.send(200, "text/plain", "ok");
+  dirty = true;
+}
+
+// ---------- HTTP 핸들러 (WiFi/리모트 모드) ----------
+void handleStatus() {
+  String body = server.hasArg("plain") ? server.arg("plain") : "";
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) { server.send(400, "text/plain", "bad json"); return; }
+  applyStatus(doc);
+  server.send(200, "text/plain", "ok");
+}
+
+void handleEvent() {
+  String body = server.hasArg("plain") ? server.arg("plain") : "";
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) { server.send(400, "text/plain", "bad json"); return; }
+  applyEvent(doc);
+  server.send(200, "text/plain", "ok");
+}
+
+// ---------- USB 시리얼 입력 (유선 모드) ----------
+// 한 줄 프로토콜:  "S {json}" = status,  "E {json}" = event
+void handleSerialLine(String line) {
+  line.trim();
+  if (line.length() < 3) return;
+  char kind = line[0];
+  int sp = line.indexOf(' ');
+  if (sp < 1) return;
+  String js = line.substring(sp + 1);
+  JsonDocument doc;
+  if (deserializeJson(doc, js)) return;
+  if (kind == 'S') applyStatus(doc);
+  else if (kind == 'E') applyEvent(doc);
+}
+
+void pollSerial() {
+  static String sbuf;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n') { handleSerialLine(sbuf); sbuf = ""; }
+    else if (c != '\r' && sbuf.length() < 400) sbuf += c;
+  }
 }
 
 void handleHealth() {
@@ -225,7 +261,9 @@ void drawScreenSessions() {
     if (!s.used) continue;
     bool idle = now - s.lastSeenMs > SESSION_IDLE_MS;
     uint16_t col = idle ? 0x8410 : stateColor(s.state);
-    char line[40]; snprintf(line, sizeof(line), "%s %s", s.label, s.activity);  // 한글 가능
+    char line[56];   // host 있으면 "host:label activity", 없으면 "label activity"
+    if (s.host[0]) snprintf(line, sizeof(line), "%s:%s %s", s.host, s.label, s.activity);
+    else           snprintf(line, sizeof(line), "%s %s", s.label, s.activity);
     gfx->setTextColor(col);
     gfx->setCursor(18, y); gfx->print(line);
     y += 24; shown++;
@@ -358,6 +396,7 @@ void setup() {
 
 void loop() {
   if (wifiOk) server.handleClient();
+  pollSerial();                 // USB(유선) 입력도 상시 수신
   uint32_t now = millis();
   expireSessions();
 
