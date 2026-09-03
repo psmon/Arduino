@@ -17,6 +17,7 @@ function Send-Hud($ep, $obj) {
     if ($u -like "serial:*") {
       $com = $u.Substring(7)
       $sp = New-Object System.IO.Ports.SerialPort($com, 115200, 'None', 8, 'One')
+      $sp.DtrEnable = $false; $sp.RtsEnable = $false   # ESP32 리셋 방지
       $sp.WriteTimeout = 300; $sp.Open()
       $prefix = if ($ep -eq '/status') { 'S' } else { 'E' }
       $sp.WriteLine("$prefix $json"); $sp.Close()
