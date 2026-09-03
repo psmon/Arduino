@@ -25,6 +25,8 @@ Claude Code (이 PC)
 | **BLE(무선)** | NUS(`6E400001…`) RX 에 `S {json}`/`E {json}` 기록. 광고명 `claude-hud` | 케이블·네트워크 없이 무선 (격리망에서도 OK) |
 
 BLE 발신은 `pc/send_ble.py`(bleak 필요; `ble_pc/venv` 재사용 가능): `python send_ble.py demo`.
+**부팅 시 BLE 를 가장 먼저 시작**(기본 전송) — WiFi 유무와 무관하게 즉시 광고하고, WiFi 는
+부가로 접속(10초 타임아웃, 실패해도 BLE/USB 로 동작).
 
 두 전송을 **동시에 받아도 안전**하다. 세션은 `session_id`로 키잉되어 같은 세션은 슬롯 하나를
 갱신(중복/이중합산 없음), 다른 세션(다른 머신)은 각각 표시된다. `host` 필드로 어느 머신인지 구분.

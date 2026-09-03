@@ -42,7 +42,7 @@
 #define NUS_RX      "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define NUS_TX      "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define FW_NAME "claude_hud"
-#define FW_VER "1.1"
+#define FW_VER "1.2"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -388,7 +388,7 @@ void connectWiFi() {
   wifiMulti.addAP(WIFI_SSID3, WIFI_PASS3);
 #endif
   uint32_t t0 = millis();
-  while (wifiMulti.run() != WL_CONNECTED && millis() - t0 < 20000) { delay(300); Serial.print("."); }
+  while (wifiMulti.run() != WL_CONNECTED && millis() - t0 < 10000) { delay(300); Serial.print("."); }
   wifiOk = (WiFi.status() == WL_CONNECTED);
   gfx->fillScreen(0x0000);
   setFontSmall(); gfx->setTextColor(wifiOk ? 0x07E0 : 0xF800);
@@ -413,7 +413,12 @@ void setup() {
   if (!gfx->begin()) Serial.println("[gfx] canvas begin FAILED (PSRAM?)");
   gfx->setUTF8Print(true);   // 한글 UTF-8 렌더
   gfx->fillScreen(0x0000);
-  connectWiFi();
+
+  // BLE 를 가장 먼저 시작 = 기본 전송 (WiFi 유무와 무관하게 부팅 즉시 광고)
+  startBLE();
+  gfx->setCursor(20, 110); setFontSmall(); gfx->setTextColor(0x07FF);
+  gfx->print("BLE ready: " BLE_NAME); gfx->flush();
+  delay(600);
 
   // 터치(CST816S) 초기화 + I2C 스캔(0x15 확인용)
   Wire.begin(TP_SDA, TP_SCL);
@@ -426,6 +431,8 @@ void setup() {
   touchOk = true;
   Serial.println("[touch] CST816S begin (swipe L/R=screen, up=settings)");
 
+  // WiFi 는 부가 — 있으면 HTTP 서버도 제공 (없어도 BLE/USB 로 동작)
+  connectWiFi();
   if (wifiOk) {
     if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", HTTP_PORT);
     server.on("/status", HTTP_POST, handleStatus);
@@ -435,7 +442,6 @@ void setup() {
     server.begin();
     Serial.printf("[claude_hud] HTTP server on :%d\n", HTTP_PORT);
   }
-  startBLE();          // BLE 수신도 상시 (WiFi 무관)
   dirty = true;
 }
 
