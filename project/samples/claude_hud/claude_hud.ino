@@ -7,6 +7,7 @@
 // 엔드포인트: POST /status, POST /event, GET /health, GET /
 
 #include <WiFi.h>
+#include <WiFiMulti.h>   // 여러 WiFi 자동 접속 (집/사무실)
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
@@ -32,7 +33,7 @@
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
 #define FW_NAME "claude_hud"
-#define FW_VER "B5"
+#define FW_VER "B6"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -47,6 +48,7 @@ Arduino_GFX *panel = new Arduino_GC9A01(bus, LCD_RST, 0, true);
 // 더블버퍼: PSRAM 프레임버퍼에 그린 뒤 flush() 로 한 번에 push -> 깜박임 없음
 Arduino_Canvas *gfx = new Arduino_Canvas(240, 240, panel);
 WebServer server(HTTP_PORT);
+WiFiMulti wifiMulti;
 CST816S touch(TP_SDA, TP_SCL, TP_RST, TP_INT);
 
 int  brightness = 255;              // 백라이트 PWM (0-255)
@@ -342,15 +344,25 @@ void connectWiFi() {
   setFontSmall(); gfx->setTextColor(0xFFFF);
   gfx->setCursor(30, 110); gfx->print("WiFi connecting...");
   gfx->flush();
-  WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.mode(WIFI_STA);
+  // 등록된 WiFi 를 모두 추가 -> 켜져있는 곳(신호 좋은 곳)에 자동 접속
+#ifdef WIFI_SSID1
+  wifiMulti.addAP(WIFI_SSID1, WIFI_PASS1);
+#endif
+#ifdef WIFI_SSID2
+  wifiMulti.addAP(WIFI_SSID2, WIFI_PASS2);
+#endif
+#ifdef WIFI_SSID3
+  wifiMulti.addAP(WIFI_SSID3, WIFI_PASS3);
+#endif
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) { delay(300); Serial.print("."); }
+  while (wifiMulti.run() != WL_CONNECTED && millis() - t0 < 20000) { delay(300); Serial.print("."); }
   wifiOk = (WiFi.status() == WL_CONNECTED);
   gfx->fillScreen(0x0000);
   setFontSmall(); gfx->setTextColor(wifiOk ? 0x07E0 : 0xF800);
   if (wifiOk) {
-    Serial.print("\nWiFi OK  IP="); Serial.println(WiFi.localIP());
-    gfx->setCursor(50, 100); gfx->print("WiFi OK");
+    Serial.printf("\nWiFi OK  SSID=%s  IP=%s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    gfx->setCursor(30, 100); gfx->print("WiFi:" + WiFi.SSID());
     gfx->setCursor(20, 130); gfx->print(WiFi.localIP().toString());
     gfx->setCursor(20, 150); gfx->print(String(MDNS_NAME) + ".local");
   } else {
