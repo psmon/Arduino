@@ -33,7 +33,7 @@
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
 #define FW_NAME "claude_hud"
-#define FW_VER "B6"
+#define FW_VER "1.0"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -420,7 +420,6 @@ void loop() {
     if (g != NONE && now - lastGestureMs > 400) {
       lastGestureMs = now;
       touchActive = true;
-      Serial.printf("[touch] gesture=%d x=%d y=%d\n", g, touch.data.x, touch.data.y);
       if (currentScreen == SCREEN_SETTINGS) {
         if (g == SWIPE_DOWN || g == SWIPE_UP) currentScreen = SCREEN_SESSIONS;
         else if (g == SINGLE_CLICK) setBrightness(touch.data.x < 120 ? brightness - 40 : brightness + 40);
