@@ -11,6 +11,10 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
+#include <BLEDevice.h>  // BLE NUS 수신 (무선, 네트워크 격리 무관)
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include <Wire.h>
 #include "CST816S.h"   // 터치(제스처) 컨트롤러
 #include <U8g2lib.h>   // 한글 유니폰트 (u8g2_font_unifont_t_korean1)
@@ -32,8 +36,13 @@
 
 #define HTTP_PORT 8080
 #define MDNS_NAME "claude-hud"
+// BLE Nordic UART Service (ble_lcd 와 동일 방식). RX 로 "S {json}"/"E {json}" 수신.
+#define BLE_NAME    "claude-hud"
+#define NUS_SERVICE "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_RX      "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_TX      "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define FW_NAME "claude_hud"
-#define FW_VER "1.0"
+#define FW_VER "1.1"
 
 #define SCREEN_SESSIONS 0
 #define SCREEN_USAGE    1
@@ -203,6 +212,29 @@ void pollSerial() {
     if (c == '\n') { handleSerialLine(sbuf); sbuf = ""; }
     else if (c != '\r' && sbuf.length() < 400) sbuf += c;
   }
+}
+
+// ---------- BLE 입력 (무선, ble_lcd 와 동일 NUS) ----------
+class HudRxCB : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *c) override {
+    String v = c->getValue().c_str();   // "S {json}" / "E {json}"
+    handleSerialLine(v);
+  }
+};
+
+void startBLE() {
+  BLEDevice::init(BLE_NAME);
+  BLEServer *bleServer = BLEDevice::createServer();
+  BLEService *svc = bleServer->createService(NUS_SERVICE);
+  BLECharacteristic *rx = svc->createCharacteristic(
+      NUS_RX, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  rx->setCallbacks(new HudRxCB());
+  svc->start();
+  BLEAdvertising *adv = BLEDevice::getAdvertising();
+  adv->addServiceUUID(NUS_SERVICE);
+  adv->setScanResponse(true);
+  BLEDevice::startAdvertising();
+  Serial.println("[ble] advertising as " BLE_NAME);
 }
 
 void handleHealth() {
@@ -403,6 +435,7 @@ void setup() {
     server.begin();
     Serial.printf("[claude_hud] HTTP server on :%d\n", HTTP_PORT);
   }
+  startBLE();          // BLE 수신도 상시 (WiFi 무관)
   dirty = true;
 }
 
