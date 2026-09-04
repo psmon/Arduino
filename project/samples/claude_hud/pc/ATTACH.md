@@ -86,6 +86,32 @@ LCD 에 `host`(= `$env:COMPUTERNAME`)와 `label`, cost/ctx 가 뜨면 연결 완
 | 포트는 맞는데 LCD 무반응 | 보드에 올라간 펌웨어가 `claude_hud` 가 아닐 수 있음. 다른 곳에서 재빌드·업로드 필요 |
 | 이벤트가 가끔 누락 | 정상. USB 모드는 동시 세션이 많으면 COM 경합으로 일부가 조용히 버려진다(무해) |
 | 상태줄이 사라짐 | `~/.claude/settings.json.hudbak` 로 복원하거나 `uninstall.ps1` 실행 |
+| 상태줄 한글·박스문자(`│`,`█`)가 깨짐 | 오래된 `hud_statusline.ps1` 사용 중. `install.ps1` 재실행으로 갱신 (아래 "인코딩 규칙" 참고) |
+| LCD 의 한글이 `?` 로 나옴 | 오래된 `send_event.ps1`/`hud_statusline.ps1`. `SerialPort.Encoding` 기본값이 **us-ascii** 라 한글이 `?` 로 치환됨 → 재설치 |
+
+## 인코딩 규칙 (한글 깨짐 방지 — 반드시 지킬 것)
+Windows 콘솔 코드페이지는 머신마다 다르다(한국어 기본 **949**, 영문 **437**, UTF-8 은 **65001**).
+발신부는 코드페이지에 **의존하지 않도록** 만들어져 있다:
+
+| 지점 | 규칙 | 안 지키면 |
+|---|---|---|
+| 기존 statusLine 출력 통과 | `Process.StandardOutput.**BaseStream**` 을 stdout 으로 **바이트 복사** (문자열로 캡처 금지) | cp949/437 에서 한글·`│`·`█` 전부 깨짐 |
+| 우리 stdout | UTF-8 바이트로 직접 write | 동일 |
+| stdin(훅/statusline JSON) | `StreamReader(stream, UTF8Encoding($false))` | 한글 경로·파일명·명령 깨짐 |
+| 시리얼 | `$sp.Encoding = UTF8Encoding($false)` | **기본값 us-ascii → 한글이 `?`** |
+| HTTP | 바디를 UTF-8 **바이트**로, `ContentType "application/json; charset=utf-8"` | 서버/보드에서 깨짐 |
+
+검증 방법 — 코드페이지를 바꿔가며 출력 바이트가 **원본 플러그인과 동일**한지 해시로 비교한다:
+```powershell
+$in = "$env:TEMP\in.json"; $w = "$env:USERPROFILE\.claude\hud\hud_statusline.ps1"
+[IO.File]::WriteAllText($in, '{"session_id":"t","model":{"display_name":"Opus 5"},"cost":{"total_cost_usd":0.42},"context_window":{"used_percentage":17},"workspace":{"current_dir":"D:\\코드\\한글폴더"}}', (New-Object Text.UTF8Encoding($false)))
+$inner = (Get-Content "$env:USERPROFILE\.claude\hud\inner_statusline.txt" -Raw).Trim()
+cmd /c "type `"$in`" | $inner > `"$env:TEMP\A.bin`""
+foreach ($cp in 65001,949,437) { cmd /c "chcp $cp >nul && type `"$in`" | powershell -NoProfile -File `"$w`" > `"$env:TEMP\B_$cp.bin`"" }
+Get-ChildItem "$env:TEMP\A.bin","$env:TEMP\B_*.bin" | % { "{0,-12} {1}" -f $_.Name, (Get-FileHash $_ -Algorithm SHA256).Hash.Substring(0,16) }
+```
+→ **네 해시가 모두 같아야 정상**(실측: 168바이트, 전부 동일). 콘솔에 찍어 눈으로 비교하면
+확인하는 터미널 자체의 디코딩 때문에 오판한다 — 반드시 **바이트/해시로** 비교할 것.
 
 ## 해제
 ```powershell

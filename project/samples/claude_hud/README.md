@@ -60,6 +60,9 @@ pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:COM3
 - 발신부(`send_event.ps1`, `hud_statusline.ps1`)를 `~/.claude/hud/`에 설치, `~/.claude/hud_url.txt`에 주소 기록
 - `settings.json`을 **백업(.hudbak) 후 병합** — 기존 statusLine은 래핑해 보존, hooks는 추가만(중복 방지, idempotent)
 - **의존성 없음**(PowerShell 내장). 적용하려면 Claude Code 재시작
+- **인코딩은 전 구간 UTF-8 고정.** 래핑된 기존 statusLine 출력은 문자열로 캡처하지 않고
+  **바이트 그대로 통과**시킨다(콘솔 코드페이지 949/437 에서 한글·`│`·`█` 깨짐 방지).
+  시리얼도 `SerialPort.Encoding` 을 UTF-8 로 바꾼다(기본값 us-ascii → 한글이 `?`). 상세: [`pc/ATTACH.md`](pc/ATTACH.md#인코딩-규칙-한글-깨짐-방지--반드시-지킬-것)
 - 해제: `pwsh -File pc/uninstall.ps1` (백업 복원)
 
 ## 빌드/업로드 (arduino-cli)

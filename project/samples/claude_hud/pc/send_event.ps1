@@ -1,12 +1,14 @@
 # Claude Code hook -> HUD 디바이스로 활동 이벤트 전송 (PowerShell, 의존성 없음).
 # hud_url.txt 가 http://... 이면 HTTP POST, serial:COMx 이면 USB 시리얼("E {json}").
 # 모든 오류는 조용히 무시 (hook 이 Claude 작동을 방해하지 않도록).
+# 인코딩: stdin/시리얼/HTTP 전부 UTF-8 고정 (한글 경로·파일명·명령이 깨지지 않도록).
 $ErrorActionPreference = 'SilentlyContinue'
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
 
 function Get-HudTarget {
   if ($env:CLAUDE_HUD_URL) { return $env:CLAUDE_HUD_URL.Trim() }
   $f = Join-Path $env:USERPROFILE ".claude\hud_url.txt"
-  if (Test-Path $f) { $v = (Get-Content $f -Raw).Trim(); if ($v) { return $v } }
+  if (Test-Path $f) { $v = (Get-Content $f -Raw -Encoding UTF8).Trim(); if ($v) { return $v } }
   return "http://claude-hud.local:8080"
 }
 
@@ -17,18 +19,21 @@ function Send-Hud($ep, $obj) {
     if ($u -like "serial:*") {
       $com = $u.Substring(7)
       $sp = New-Object System.IO.Ports.SerialPort($com, 115200, 'None', 8, 'One')
+      $sp.Encoding = New-Object System.Text.UTF8Encoding($false)  # 기본값 ASCII 면 한글이 '?' 로 감
       $sp.DtrEnable = $false; $sp.RtsEnable = $false   # ESP32 리셋 방지
       $sp.WriteTimeout = 300; $sp.Open()
       $prefix = if ($ep -eq '/status') { 'S' } else { 'E' }
       $sp.WriteLine("$prefix $json"); $sp.Close()
     } else {
-      Invoke-RestMethod -Uri "$u$ep" -Method Post -Body $json -ContentType "application/json" -TimeoutSec 1 | Out-Null
+      $body = [System.Text.Encoding]::UTF8.GetBytes($json)   # charset 명시 + 바이트 전송
+      Invoke-RestMethod -Uri "$u$ep" -Method Post -Body $body `
+        -ContentType "application/json; charset=utf-8" -TimeoutSec 1 | Out-Null
     }
   } catch {}
 }
 
 # hook JSON 읽기
-$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput())
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), $Utf8)
 $raw = $reader.ReadToEnd()
 try { $d = $raw | ConvertFrom-Json } catch { return }
 
