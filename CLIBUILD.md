@@ -36,10 +36,11 @@ arduino-cli board list         # 연결된 보드/포트 확인 (CH343 = 우리 
 
 ## 2. 보드 포트 찾기 (Windows)
 ```powershell
-# CH343 이 우리 보드. COM4/COM5 는 블루투스라 무관.
-Get-CimInstance Win32_PnPEntity | ? { $_.Name -match 'CH343.*COM\d+' } | % Name
+# CH343 이 우리 보드. 이름 대신 VID 로 판별하는 편이 확실하다(블루투스/내장 COM 과 혼동 방지).
+Get-CimInstance Win32_PnPEntity | ? { $_.PNPDeviceID -match 'VID_1A86' -and $_.Name -match 'COM\d+' } | % Name
 ```
-현재 머신 기준 보드는 **COM6**.
+**COM 번호는 머신마다 다르다** — 실측: 최초 개발 머신 **COM6**, `SAM` **COM3**.
+아래 예시의 `COM6` 은 자리표시자이니 위 명령으로 확인한 값으로 바꿔 쓸 것.
 
 ---
 

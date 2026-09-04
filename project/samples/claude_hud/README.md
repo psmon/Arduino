@@ -41,6 +41,10 @@ BLE 발신은 `pc/send_ble.py`(bleak 필요; `ble_pc/venv` 재사용 가능): `p
 > 디바이스의 멀티 WiFi 접속 자체는 어디서든 되지만, PC→디바이스 전송이 막히는 것은 별개다.
 
 ## 여러 컴퓨터에서 보내기 (설치기)
+> 이미 펌웨어가 올라간 보드를 **새 컴퓨터에 USB로 부착**하는 전체 절차(포트 실측 → 설치 → 검증 →
+> 트러블슈팅)는 **[`pc/ATTACH.md`](pc/ATTACH.md)** 참고. 그 머신엔 **Arduino IDE/arduino-cli/Python이
+> 필요 없다** — 발신부는 PowerShell 내장 기능만 쓴다.
+
 다른 컴퓨터에서도 그 머신의 Claude Code를 이 HUD로 보내려면 `pc/install.ps1` 실행:
 ```powershell
 # WiFi(리모트) — 디바이스 IP
@@ -48,10 +52,11 @@ pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url http://192.168.0.88:8080
 # USB(유선) — COM 포트 자동 검출 (권장, 컴퓨터마다 번호 다름)
 pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:auto
 # USB(유선) — 포트를 직접 지정
-pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:COM6
+pwsh -ExecutionPolicy Bypass -File pc/install.ps1 -Url serial:COM3
 ```
 > `serial:auto` 는 보드의 **CH343(WCH VID_1A86)** COM 포트를 자동으로 찾는다(`pc/find_port.ps1`).
 > 포트만 확인하려면: `pwsh -File pc/find_port.ps1`
+> **COM 번호는 머신마다 다르다** — 최초 개발 머신 COM6, `SAM` COM3. 하드코딩하지 말고 `serial:auto` 를 쓸 것.
 - 발신부(`send_event.ps1`, `hud_statusline.ps1`)를 `~/.claude/hud/`에 설치, `~/.claude/hud_url.txt`에 주소 기록
 - `settings.json`을 **백업(.hudbak) 후 병합** — 기존 statusLine은 래핑해 보존, hooks는 추가만(중복 방지, idempotent)
 - **의존성 없음**(PowerShell 내장). 적용하려면 Claude Code 재시작
