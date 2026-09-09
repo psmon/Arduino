@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Embedded experiments for the **Waveshare ESP32-S3-LCD-1.28** (round 240×240 GC9A01 LCD,
-QMI8658 IMU). There is **no in-repo build system, tests, or linter** — Arduino sketches are
-compiled/uploaded through the **Arduino IDE 2.x** GUI. The runnable PC-side code in-repo is the
-Python BLE tool (`ble_pc/`) and the PowerShell HUD senders (`claude_hud/pc/`). `README.md` holds the
-end-user setup guide (IDE 2.3.10, ESP32
+Embedded experiments for two Waveshare boards: the original **ESP32-S3-LCD-1.28** (round 240×240 GC9A01
+LCD, QMI8658 IMU; Arduino) and, since 2026-09, the **ESP32-S3-Touch-AMOLED-1.75C** (466×466 round AMOLED;
+ESP-IDF + ESP-Brookesia) which is now the **primary device** — see the last section. There are **no tests or
+linter**. LCD-1.28 sketches are compiled/uploaded through the **Arduino IDE 2.x** GUI or `arduino-cli`; the
+AMOLED project builds with `idf.py`. Runnable PC-side code in-repo is the Python BLE tool (`ble_pc/`), the
+PowerShell HUD senders for the old board (`claude_hud/pc/`) and the BLE bridge + installer for the new one
+(`claude_hud_amoled/pc/`). `README.md` holds the end-user setup guide (IDE 2.3.10, ESP32
 core 3.3.11, Arduino_GFX + U8g2 libraries, CH343 driver, board options).
 
 ## Layout convention
@@ -96,3 +98,26 @@ to read chip/flash, and a 115200 serial read distinguishes a clean boot from a c
 
 Public repo `psmon/Arduino`, default branch `main`, `gh` CLI authenticated. Normal flow:
 `git add -A && git commit -m "…" && git push`.
+
+## Second device: ESP32-S3-Touch-AMOLED-1.75C (primary since 2026-09-10)
+
+- Board: ESP32-S3R8, CO5300 466×466 AMOLED, touch CST9217, 32MB flash, 8MB octal PSRAM, BLE 5 + WiFi, aluminum
+  case. Native USB-Serial-JTAG → **COM7** (VID 303A; no CH343). Opening COM7 with DTR/RTS low does NOT reset the
+  board; an RTS pulse does (use it to capture boot logs). COM6 stays the LCD-1.28.
+- Firmware is **ESP-IDF v5.5.5, not Arduino**: `project/samples/claude_hud_amoled/` = Waveshare's ESP-Brookesia
+  phone demo + our `components/brookesia_app_claude_hud` app. Toolchain lives in `C:\esp\v5.5.5`; always activate
+  with `. .\idf-env.ps1` from that project (it pins `IDF_PYTHON_ENV_PATH` to the py3.12 venv — plain `export.ps1`
+  fails). `brookesia_core` is referenced from the Waveshare repo clone at `C:\esp\ws-amoled-175c`
+  (`WS_AMOLED_REPO`), not vendored. Build: `idf.py -p COM7 build flash` (app-only: `app-flash`).
+- **Adding an app (expected to happen repeatedly):** one folder `components/brookesia_app_<name>/` with a class
+  deriving `esp_brookesia::systems::phone::App` (`run()`/`back()`), registered at the end of the .cpp with
+  `ESP_UTILS_REGISTER_PLUGIN_WITH_CONSTRUCTOR`; 112×112 ARGB8888 icon (`tools/gen_icon.py`); component CMake needs
+  `WHOLE_ARCHIVE`; declare `waveshare/esp32_s3_touch_amoled_1_75c` in its `idf_component.yml` if it calls BSP
+  functions. `main/main.cpp` stays untouched. Apps are statically linked → every change reflashes the whole app
+  image (incremental build is 1–2 min).
+- **Transport is BLE only** (user decision: no WiFi/USB rx, no fallbacks; failures = warning log + INFO tile).
+  PC side is `claude_hud_amoled/pc/`: `ble_bridge.py` keeps one BLE connection and serves
+  `http://127.0.0.1:8765`; hooks/statusLine POST there; `install.ps1` merges settings.json (backup `.amoledbak`,
+  scripts in `~/.claude/hud_amoled/`). Keep this **strictly separate** from the old board's `claude_hud/pc`
+  (USB+BLE+HTTP) — do not share files between the two devices' code or installers.
+- Factory-recovery image: Waveshare repo `Firmware/*FactoryOnly*.bin` at offset 0x0.
