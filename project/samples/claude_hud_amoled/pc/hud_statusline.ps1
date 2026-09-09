@@ -1,7 +1,8 @@
 # Claude Code statusLine -> local BLE bridge (http://127.0.0.1:8765/status) + prints the statusline text.
 # If an existing statusLine was wrapped by install.ps1, its command is in inner_statusline.txt and its
-# output is passed through as raw bytes (no decode/re-encode, so Korean / ANSI / box characters survive
-# a 949/437 console code page). Bluetooth-only device: no serial/http-to-device paths here.
+# output is passed through as raw bytes via temp files (no decode/re-encode, so Korean / ANSI / box
+# characters survive a 949/437 console code page; works on Windows PowerShell 5.1 and pwsh 7).
+# Bluetooth-only device: no serial/http-to-device paths here.
 $ErrorActionPreference = 'SilentlyContinue'
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 $hud = Join-Path $env:USERPROFILE ".claude\hud_amoled"
@@ -29,29 +30,24 @@ try {
   Invoke-RestMethod -Uri "$bridge/status" -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -TimeoutSec 1 | Out-Null
 } catch {}
 
-# Existing statusLine: run it and copy its stdout bytes straight through.
+# Existing statusLine: feed it the original JSON and copy its stdout bytes straight through.
 $innerFile = Join-Path $hud "inner_statusline.txt"
 if (Test-Path $innerFile) {
   $inner = (Get-Content $innerFile -Raw -Encoding UTF8).Trim()
   if ($inner) {
+    $tag = [System.IO.Path]::GetRandomFileName()
+    $inF = Join-Path $env:TEMP "hud_sl_in_$tag"
+    $outF = Join-Path $env:TEMP "hud_sl_out_$tag"
     try {
-      $psi = New-Object System.Diagnostics.ProcessStartInfo
-      $psi.FileName  = 'cmd.exe'
-      $psi.Arguments = '/d /c ' + $inner
-      $psi.UseShellExecute = $false
-      $psi.CreateNoWindow  = $true
-      $psi.RedirectStandardInput  = $true
-      $psi.RedirectStandardOutput = $true
-      $proc = [System.Diagnostics.Process]::Start($psi)
-      $inBytes = $Utf8.GetBytes($json)
-      $proc.StandardInput.BaseStream.Write($inBytes, 0, $inBytes.Length)
-      $proc.StandardInput.BaseStream.Flush()
-      $proc.StandardInput.Close()
-      $proc.StandardOutput.BaseStream.CopyTo($stdout)
-      $stdout.Flush()
-      $proc.WaitForExit(5000) | Out-Null
-      return
+      [System.IO.File]::WriteAllBytes($inF, $Utf8.GetBytes($json))
+      cmd /d /c "type `"$inF`" | $inner > `"$outF`"" 2>$null | Out-Null
+      if (Test-Path $outF) {
+        $bytes = [System.IO.File]::ReadAllBytes($outF)
+        if ($bytes.Length -gt 0) { $stdout.Write($bytes, 0, $bytes.Length); $stdout.Flush() }
+      }
     } catch {}
+    Remove-Item $inF, $outF -Force -ErrorAction SilentlyContinue
+    if ($bytes -and $bytes.Length -gt 0) { return }
   }
 }
 $line = "[{0}] `${1:N3} | ctx {2:N0}%" -f $model, $cost, $ctx
