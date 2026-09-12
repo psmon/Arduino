@@ -7,7 +7,7 @@
 
 namespace claude_hud {
 
-constexpr int      MAX_SESSIONS    = 6;
+constexpr int      MAX_SESSIONS    = 5;        // = CREW slots; oldest idle session is recycled first
 constexpr uint32_t SESSION_TTL_MS  = 180000;   // no news for 3 min -> slot freed
 constexpr uint32_t SESSION_IDLE_MS = 45000;    // 45 s without news -> idle
 
@@ -15,12 +15,14 @@ struct Session {
     bool     used = false;
     char     id[40] = "";
     char     host[16] = "";        // sending machine (COMPUTERNAME)
-    char     label[24] = "";       // repo / folder name
+    char     label[24] = "";       // repo / folder name (shown as the CREW name tag)
     char     state[16] = "idle";   // idle/prompt_start/thinking/tool/tool_end/done/subagent
     char     activity[64] = "";
     char     model[24] = "-";
     float    costUsd = 0;
     float    ctxUsedPct = 0;
+    float    energy = 0;           // activity energy 0..100: +25 per event, decays ~30 s
+    uint32_t events = 0;
     uint32_t turnStartMs = 0;
     uint32_t lastSeenMs = 0;
 };
@@ -41,6 +43,11 @@ struct NetInfo {                   // BLE status for the INFO tile
 };
 
 uint32_t nowMs();
+
+// True when a session counts as idle (no news for SESSION_IDLE_MS, or its turn ended).
+bool sessionIdle(const Session &s, uint32_t now);
+// Activity level for the CREW state machine: 0 idle, 1 low, 2 mid, 3 high.
+int  sessionLevel(const Session &s, uint32_t now);
 
 class State {
 public:

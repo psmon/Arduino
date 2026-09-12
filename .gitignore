@@ -27,3 +27,10 @@ sdkconfig.old
 managed_components/
 dependencies.lock
 build.log
+
+# font sources (OFL, re-download via tools/gen_font.py)
+*.ttf
+
+# .NET build outputs (amoled_chat_host)
+bin/
+obj/

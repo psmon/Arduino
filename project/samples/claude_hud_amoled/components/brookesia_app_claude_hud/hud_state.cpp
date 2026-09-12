@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include "cJSON.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -11,6 +12,25 @@ static const char *TAG = "hud_state";
 namespace claude_hud {
 
 uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+bool sessionIdle(const Session &s, uint32_t now)
+{
+    if (!s.used) return true;
+    if (now - s.lastSeenMs > SESSION_IDLE_MS) return true;
+    return !strcmp(s.state, "done") || !strcmp(s.state, "idle");
+}
+
+int sessionLevel(const Session &s, uint32_t now)
+{
+    if (sessionIdle(s, now)) return 0;
+    // energy fades linearly to 0 over the idle window
+    float fade = 1.0f - (float)(now - s.lastSeenMs) / (float)SESSION_IDLE_MS;
+    if (fade < 0) fade = 0;
+    float e = s.energy * fade;
+    if (e >= 60) return 3;
+    if (e >= 25) return 2;
+    return 1;
+}
 
 static void copyStr(char *dst, size_t n, const char *src)
 {
@@ -31,13 +51,19 @@ static bool jnum(cJSON *d, const char *k, double &out)
 
 State &State::instance() { static State s; return s; }
 
+// Slot lookup: existing id -> free slot -> oldest idle slot -> oldest slot.
 Session *State::get(const char *id)
 {
     if (!id || !*id) id = "?";
+    uint32_t now = nowMs();
     for (auto &s : s_) if (s.used && !strcmp(s.id, id)) return &s;
     Session *slot = nullptr;
     for (auto &s : s_) if (!s.used) { slot = &s; break; }
-    if (!slot) {                                   // full -> recycle the oldest
+    if (!slot) {
+        for (auto &s : s_)
+            if (sessionIdle(s, now) && (!slot || s.lastSeenMs < slot->lastSeenMs)) slot = &s;
+    }
+    if (!slot) {
         slot = &s_[0];
         for (auto &s : s_) if (s.lastSeenMs < slot->lastSeenMs) slot = &s;
     }
@@ -53,6 +79,16 @@ void State::expire()
 {
     uint32_t now = nowMs();
     for (auto &s : s_) if (s.used && now - s.lastSeenMs > SESSION_TTL_MS) s.used = false;
+}
+
+static void bump(Session *s, float add)
+{
+    uint32_t now = nowMs();
+    float dt = (float)(now - s->lastSeenMs);
+    if (s->lastSeenMs) s->energy *= expf(-dt / 30000.0f);   // ~30 s decay
+    s->energy += add;
+    if (s->energy > 100) s->energy = 100;
+    s->lastSeenMs = now;
 }
 
 bool State::applyStatus(const char *json)
@@ -76,7 +112,7 @@ bool State::applyStatus(const char *json)
             if (jnum(d, "rl7d_used_pct", v)) lim_.rl7dPct = (float)v;
             if (jnum(d, "rl7d_reset_in", v)) lim_.rl7dResetIn = (long)v;
         }
-        s->lastSeenMs = nowMs();
+        bump(s, 5);
         ver_++;
     }
     cJSON_Delete(d);
@@ -101,7 +137,8 @@ bool State::applyEvent(const char *json)
             snprintf(s->activity, sizeof(s->activity), "%s %s", jstr(d, "tool", ""), jstr(d, "target", ""));
         }
         if (!strcmp(type, "prompt_start")) s->turnStartMs = nowMs();
-        s->lastSeenMs = nowMs();
+        s->events++;
+        bump(s, 25);
         ver_++;
     }
     cJSON_Delete(d);
@@ -145,9 +182,7 @@ bool State::anyActive()
 {
     std::lock_guard<std::mutex> lk(m_);
     uint32_t now = nowMs();
-    for (auto &s : s_)
-        if (s.used && now - s.lastSeenMs < SESSION_IDLE_MS && strcmp(s.state, "done") && strcmp(s.state, "idle"))
-            return true;
+    for (auto &s : s_) if (s.used && !sessionIdle(s, now)) return true;
     return false;
 }
 
