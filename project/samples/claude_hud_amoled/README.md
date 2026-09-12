@@ -13,6 +13,21 @@ Waveshare **ESP32-S3-Touch-AMOLED-1.75C**(466×466 원형 AMOLED, ESP32-S3R8, 32
 | USAGE | 누적 cost($), 세션 수, ctx 사용%, 5h/7d 한도 사용% 막대 |
 | INFO | BLE 상태(advertising/connected/에러), 수신 카운트·마지막 수신 경과, 업타임, 밝기 슬라이더 |
 
+## 앱 3개 (런처에 함께 뜬다)
+
+| 앱 | 컴포넌트 | 하는 일 |
+|----|----------|---------|
+| **Claude HUD** | `brookesia_app_claude_hud` | CREW/SESSIONS/USAGE/INFO 타일. `S`/`E` 라인 수신 |
+| **Chat** | `brookesia_app_chat` | 눌러서 말하기 음성 챗. 마이크→ADPCM→BLE, 답변 표시 + 스피커 재생 |
+| **Settings** | `brookesia_app_settings` | 스피커 볼륨·마이크 감도·밝기 슬라이더, 답변 모드, 테스트 톤 |
+
+BLE 스택(`hud_ble.cpp`)은 세 앱이 공유하고, 먼저 설치되는 앱이 시작한다. 화면 문구는 **영어**다
+(한글 폰트는 호스트가 보내는 한국어 답변을 그리기 위해 그대로 유지).
+
+**물리 버튼**: 이 보드가 소프트웨어에 노출하는 버튼은 **BOOT(GPIO0) 하나뿐**이다 (`BSP_CAPS_BUTTONS 0`,
+케이스의 다른 키는 RESET이라 칩 리셋선에 직결). 그래서 볼륨 업/다운을 한 버튼이 나눠 갖는다 —
+짧게 누르면 +5, 길게 누르면 -5(누르고 있으면 반복). 나머지는 모두 터치로 조작한다.
+
 ## 통신: BLE NUS (프로토콜은 claude_hud 와 동일)
 - 광고명 `claude-hud`, 서비스 `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`, RX(`…0002`)에 `S {json}` / `E {json}` 한 줄씩 write.
 - 부팅 즉시 광고. 중앙 장치가 끊기면 자동 재광고. MTU 512 요청.

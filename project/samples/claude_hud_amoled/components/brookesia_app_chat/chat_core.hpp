@@ -24,6 +24,8 @@ struct Snapshot {
     bool     hostOnline = false;       // H line received on this connection
     bool     bleConnected = false;
     bool     micOk = false;
+    int      volume = 70;              // speaker, 0..100
+    int      micGain = 30;             // ES7210 input gain in dB, 0..60
     bool     hostTts = false;          // host reported a usable TTS voice in its hello
     int      chatNo = 1;               // which conversation the host has us on (1-based)
     AnswerMode mode = AnswerMode::TextOnly;
@@ -49,6 +51,14 @@ public:
 
     AnswerMode mode();                 // persisted in NVS
     void setMode(AnswerMode m);
+
+    // Audio levels. Persisted in NVS and applied to the codec immediately when it is already open,
+    // otherwise at open time - the Settings app can move them before anything has been recorded.
+    int  volume();                     // 0..100
+    void setVolume(int v);
+    int  micGain();                    // dB, 0..60
+    void setMicGain(int db);
+    void playTestTone();               // short beep so a volume change can be heard immediately
 
     void     snapshot(Snapshot &out);
     uint32_t version();                // bumps on every visible change

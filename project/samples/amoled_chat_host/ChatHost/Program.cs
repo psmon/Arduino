@@ -240,6 +240,16 @@ app.MapPost("/api/session/reset", (ConversationService conv) =>
 app.MapPost("/api/device/newchat", async (BleLink link) =>
     Results.Json(new { ok = await link.SendLineAsync("C {\"cmd\":\"newchat\"}") }));
 
+// Device audio settings, the same values the Settings app's sliders move.
+app.MapPost("/api/device/volume", async (BleLink link, int v) =>
+    Results.Json(new { ok = await link.SendLineAsync($"C {{\"cmd\":\"vol\",\"v\":{Math.Clamp(v, 0, 100)}}}") }));
+
+app.MapPost("/api/device/micgain", async (BleLink link, int db) =>
+    Results.Json(new { ok = await link.SendLineAsync($"C {{\"cmd\":\"gain\",\"db\":{Math.Clamp(db, 0, 60)}}}") }));
+
+app.MapPost("/api/device/tone", async (BleLink link) =>
+    Results.Json(new { ok = await link.SendLineAsync("C {\"cmd\":\"tone\"}") }));
+
 // Stop whatever the host is doing for the device right now.
 app.MapPost("/api/device/stop", (ConversationService conv) =>
     Results.Json(new { cancelled = conv.CancelCurrent("stopped from the host") }));

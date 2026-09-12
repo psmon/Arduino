@@ -114,6 +114,8 @@ void Core::init()
     if (nvs_open(NVS_NS, NVS_READONLY, &nvs) == ESP_OK) {
         uint8_t v = 0;
         if (nvs_get_u8(nvs, "mode", &v) == ESP_OK) s_.mode = (v == 1) ? AnswerMode::TextAndVoice : AnswerMode::TextOnly;
+        if (nvs_get_u8(nvs, "vol", &v) == ESP_OK) s_.volume = v > 100 ? 100 : v;
+        if (nvs_get_u8(nvs, "gain", &v) == ESP_OK) s_.micGain = v > 60 ? 60 : v;
         nvs_close(nvs);
     }
     // The tx task exists so a reply to an inbound line never calls into NimBLE from inside its own
@@ -161,7 +163,7 @@ bool Core::micInit()
     if (mic_) return true;
     esp_codec_dev_handle_t h = bsp_audio_codec_microphone_init();
     if (!h) { ESP_LOGW(TAG, "microphone init failed (bsp_audio_codec_microphone_init)"); return false; }
-    esp_codec_dev_set_in_gain(h, 30.0f);
+    esp_codec_dev_set_in_gain(h, (float)micGain());
     esp_codec_dev_sample_info_t fs = {};
     fs.sample_rate = SAMPLE_RATE;
     fs.channel = 1;
@@ -215,6 +217,84 @@ void Core::setMode(AnswerMode m)
     }
     ESP_LOGI(TAG, "answer mode -> %s", m == AnswerMode::TextAndVoice ? "text+voice" : "text");
     if (m == AnswerMode::TextOnly) playAbort_ = true;
+}
+
+int Core::volume()
+{
+    std::lock_guard<std::mutex> g(m_);
+    return s_.volume;
+}
+
+void Core::setVolume(int v)
+{
+    v = v < 0 ? 0 : (v > 100 ? 100 : v);
+    void *spk;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (s_.volume == v) return;
+        s_.volume = v;
+        spk = spk_;
+        bump();
+    }
+    if (spk) esp_codec_dev_set_out_vol((esp_codec_dev_handle_t)spk, (float)v);
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "vol", (uint8_t)v);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGI(TAG, "speaker volume -> %d", v);
+}
+
+int Core::micGain()
+{
+    std::lock_guard<std::mutex> g(m_);
+    return s_.micGain;
+}
+
+void Core::setMicGain(int db)
+{
+    db = db < 0 ? 0 : (db > 60 ? 60 : db);
+    void *mic;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (s_.micGain == db) return;
+        s_.micGain = db;
+        mic = mic_;
+        bump();
+    }
+    if (mic) esp_codec_dev_set_in_gain((esp_codec_dev_handle_t)mic, (float)db);
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "gain", (uint8_t)db);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGI(TAG, "mic gain -> %d dB", db);
+}
+
+// A 0.4 s tone, so moving the volume slider does something audible without asking the host to speak.
+// Goes through the normal playback path: same buffers, same codec-open logic.
+void Core::playTestTone()
+{
+    std::lock_guard<std::mutex> g(m_);
+    int b = (playIdx_ == 0) ? 1 : 0;
+    if (!spkBuf_[b]) {
+        spkBuf_[b] = (uint8_t *)heap_caps_malloc(SPK_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!spkBuf_[b]) return;
+    }
+    const int n = SAMPLE_RATE * 2 / 5;                 // 0.4 s
+    for (int i = 0; i < n; i++) {
+        double env = i < 400 ? i / 400.0 : (i > n - 400 ? (n - i) / 400.0 : 1.0);   // avoid a click
+        int16_t v = (int16_t)(std::sin(2 * M_PI * 660.0 * i / SAMPLE_RATE) * 9000 * env);
+        spkBuf_[b][i * 2] = (uint8_t)v;
+        spkBuf_[b][i * 2 + 1] = (uint8_t)(v >> 8);
+    }
+    spkLen_[b] = (size_t)n * 2;
+    fillIdx_ = b;
+    pendingIdx_ = b;
+    playAbort_ = true;                                 // cut off anything already speaking
+    playReady_ = true;
 }
 
 // Stop everything that is in flight: recording, the host request and any answer playback.
@@ -433,6 +513,14 @@ bool Core::onLine(const char *line, size_t len)
             ok = cJSON_IsString(tx) && sendText(tx->valuestring);
         } else if (!strcmp(c, "clear")) {
             clear();
+        } else if (!strcmp(c, "vol")) {
+            const cJSON *v = cJSON_GetObjectItem(js, "v");
+            if (cJSON_IsNumber(v)) { setVolume(v->valueint); playTestTone(); } else ok = false;
+        } else if (!strcmp(c, "gain")) {
+            const cJSON *v = cJSON_GetObjectItem(js, "db");
+            if (cJSON_IsNumber(v)) setMicGain(v->valueint); else ok = false;
+        } else if (!strcmp(c, "tone")) {
+            playTestTone();
         } else if (!strcmp(c, "newchat")) {
             newChat();
         } else if (!strcmp(c, "mode")) {
@@ -579,7 +667,7 @@ void Core::playTask()
                 bump();
                 continue;
             }
-            esp_codec_dev_set_out_vol(h, 80.0f);
+            esp_codec_dev_set_out_vol(h, (float)volume());
             esp_codec_dev_sample_info_t fs = {};
             fs.sample_rate = SAMPLE_RATE;
             fs.channel = 1;

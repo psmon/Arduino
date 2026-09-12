@@ -37,7 +37,7 @@ static const uint32_t C_CYAN   = 0x5CE1E6;
 static const uint32_t C_PURPLE = 0xA78BFA;
 static const uint32_t C_PURPLE_BG = 0x2A2440;
 
-static const char *PRESET_TEXT = "안녕! 지금 몇 시인지 한 문장으로 알려줘.";
+static const char *PRESET_TEXT = "What time is it? Answer in one short sentence.";
 
 // Layout tuned to the 466x466 circle: at a given y the usable half-width is sqrt(233^2 - (y-233)^2),
 // so anything near the top or the bottom has to stay narrow or the bezel clips it.
@@ -165,7 +165,7 @@ void VoiceChat::buildUi(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     // top: host line
-    _lblHost = mkLabel(scr, "BLE 대기 중", &font_nanum_18, C_GRAY);
+    _lblHost = mkLabel(scr, "waiting for BLE", &font_nanum_18, C_GRAY);
     lv_obj_set_width(_lblHost, W_HOST);
     lv_label_set_long_mode(_lblHost, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(_lblHost, LV_TEXT_ALIGN_CENTER, 0);
@@ -174,12 +174,12 @@ void VoiceChat::buildUi(lv_obj_t *scr)
     // the setting: text answer only, or text plus a spoken answer through the speaker
     _btnMode = mkBtn(scr, W_MODE, H_MODE, H_MODE / 2, C_DIM, modeEvent, LV_EVENT_CLICKED);
     lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, X_MODE, Y_MODE);
-    _lblMode = mkLabel(_btnMode, "텍스트만", &font_nanum_18, C_GRAY);
+    _lblMode = mkLabel(_btnMode, "Text only", &font_nanum_18, C_GRAY);
     lv_obj_center(_lblMode);
 
     _btnNew = mkBtn(scr, W_NEW, H_MODE, H_MODE / 2, C_DIM, newChatEvent, LV_EVENT_CLICKED);
     lv_obj_align(_btnNew, LV_ALIGN_TOP_MID, X_NEW, Y_MODE);
-    lv_obj_center(mkLabel(_btnNew, "새 대화", &font_nanum_18, C_GRAY));
+    lv_obj_center(mkLabel(_btnNew, "New chat", &font_nanum_18, C_GRAY));
 
     // middle: conversation box (scrollable)
     _box = lv_obj_create(scr);
@@ -197,7 +197,7 @@ void VoiceChat::buildUi(lv_obj_t *scr)
     _lblUser = mkLabel(_box, "", &font_nanum_18, C_CYAN);
     lv_obj_set_width(_lblUser, W_BOX - 32);
     lv_label_set_long_mode(_lblUser, LV_LABEL_LONG_WRAP);
-    _lblAi = mkLabel(_box, "마이크를 누른 채 말하세요.", &font_nanum_18, C_WHITE);
+    _lblAi = mkLabel(_box, "Hold the microphone and speak.", &font_nanum_18, C_WHITE);
     lv_obj_set_width(_lblAi, W_BOX - 32);
     lv_label_set_long_mode(_lblAi, LV_LABEL_LONG_WRAP);
 
@@ -245,9 +245,9 @@ void VoiceChat::refresh()
     _seen = v;
 
     char buf[192];
-    if (!s.bleConnected)      snprintf(buf, sizeof(buf), "BLE 연결 대기 중");
-    else if (!s.hostOnline)   snprintf(buf, sizeof(buf), "호스트 응답 대기");
-    else if (s.chatNo > 1)    snprintf(buf, sizeof(buf), "%s · %s · 대화 %d", s.host, s.provider, s.chatNo);
+    if (!s.bleConnected)      snprintf(buf, sizeof(buf), "waiting for BLE");
+    else if (!s.hostOnline)   snprintf(buf, sizeof(buf), "waiting for host");
+    else if (s.chatNo > 1)    snprintf(buf, sizeof(buf), "%s · %s · chat %d", s.host, s.provider, s.chatNo);
     else                      snprintf(buf, sizeof(buf), "%s · %s", s.host, s.provider);
     lv_label_set_text(_lblHost, buf);
 
@@ -255,7 +255,7 @@ void VoiceChat::refresh()
     if (s.hostTts) {
         lv_obj_remove_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
         bool voice = s.mode == AnswerMode::TextAndVoice;
-        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX " 텍스트+음성" : "텍스트만");
+        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX " Text + voice" : "Text only");
         lv_obj_set_style_text_color(_lblMode, lv_color_hex(voice ? C_PURPLE : C_GRAY), 0);
         lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), 0);
         lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), LV_STATE_PRESSED);
@@ -265,39 +265,39 @@ void VoiceChat::refresh()
 
     lv_label_set_text(_lblUser, s.transcript[0] ? s.transcript : "");
     if (s.reply[0])                                      lv_label_set_text(_lblAi, s.reply);
-    else if (s.stage == Stage::Idle && !s.transcript[0]) lv_label_set_text(_lblAi, "마이크를 누른 채 말하세요.");
+    else if (s.stage == Stage::Idle && !s.transcript[0]) lv_label_set_text(_lblAi, "Hold the microphone and speak.");
     else                                                 lv_label_set_text(_lblAi, "");
 
     const char *stage = "";
     uint32_t micColor = C_BLUE;
     switch (s.stage) {
     case Stage::Idle:
-        stage = s.micOk ? "누르고 말하기" : "누르고 말하기 (마이크 준비 전)";
+        stage = s.micOk ? "hold to talk" : "hold to talk (mic not ready)";
         break;
     case Stage::Recording:
-        snprintf(buf, sizeof(buf), "듣는 중… %lu.%lus",
+        snprintf(buf, sizeof(buf), "listening %lu.%lus",
                  (unsigned long)(s.recMs / 1000), (unsigned long)((s.recMs / 100) % 10));
         stage = buf; micColor = C_RED;
         break;
-    case Stage::Sending: stage = "전송 중…";      micColor = C_AMBER; break;
-    case Stage::Stt:     stage = "음성 인식 중…"; micColor = C_AMBER; break;
-    case Stage::Think:   stage = "생각 중…";      micColor = C_AMBER; break;
+    case Stage::Sending: stage = "sending";        micColor = C_AMBER; break;
+    case Stage::Stt:     stage = "transcribing";   micColor = C_AMBER; break;
+    case Stage::Think:   stage = "thinking";       micColor = C_AMBER; break;
     case Stage::Reply:
-        stage = s.replyDone ? "완료" : "답변 수신 중…";
+        stage = s.replyDone ? "done" : "receiving answer";
         micColor = s.replyDone ? C_GREEN : C_AMBER;
         break;
     case Stage::Speaking:
         if (s.speakWant && s.speakGot < s.speakWant)
-            snprintf(buf, sizeof(buf), "음성 받는 중… %lu%%", (unsigned long)(100UL * s.speakGot / s.speakWant));
+            snprintf(buf, sizeof(buf), "receiving speech %lu%%", (unsigned long)(100UL * s.speakGot / s.speakWant));
         else
-            snprintf(buf, sizeof(buf), "음성 재생 중…");
+            snprintf(buf, sizeof(buf), "speaking");
         stage = buf; micColor = C_PURPLE;
         break;
     case Stage::Busy:
-        stage = "이전 요청 정리 중…"; micColor = C_AMBER;
+        stage = "finishing previous request"; micColor = C_AMBER;
         break;
     case Stage::Error:
-        snprintf(buf, sizeof(buf), "오류: %s", s.error); stage = buf; micColor = C_RED;
+        snprintf(buf, sizeof(buf), "error: %s", s.error); stage = buf; micColor = C_RED;
         break;
     }
     lv_label_set_text(_lblStage, stage);

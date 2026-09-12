@@ -105,6 +105,8 @@ language auto-detect on the small model sometimes mis-hears synthetic English as
 | POST | `/api/device/speak` `{line}` | synthesise text and play it on the device speaker |
 | POST | `/api/device/stop` | cancel whatever is running |
 | POST | `/api/device/newchat` | ask the device to start a new conversation |
+| POST | `/api/device/volume?v=70` · `/api/device/micgain?db=30` | the Settings app's sliders, remotely |
+| POST | `/api/device/tone` | play the test tone on the device speaker |
 | POST | `/api/device/clear` | clear the device screen |
 | POST | `/api/session/reset` | abandon the CLI conversation and start a fresh session id |
 | POST | `/status` · `/event` | HUD passthrough, identical to `ble_bridge.py` |
