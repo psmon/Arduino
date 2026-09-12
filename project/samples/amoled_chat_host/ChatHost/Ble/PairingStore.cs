@@ -26,6 +26,9 @@ public sealed class PairingStore
     {
         public PairedDevice? Device { get; set; }
         public string? Provider { get; set; }
+        /// <summary>Which conversation the device is on. Bumped by "new chat"; persisted so a host
+        /// restart does not silently resume the conversation the person deliberately left.</summary>
+        public int SessionEpoch { get; set; }
     }
 
     private readonly string _path;
@@ -48,6 +51,11 @@ public sealed class PairingStore
     public string FilePath => _path;
     public PairedDevice? Device { get { lock (_lock) return _state.Device; } }
     public string? Provider { get { lock (_lock) return _state.Provider; } }
+    public int SessionEpoch
+    {
+        get { lock (_lock) return _state.SessionEpoch; }
+        set { lock (_lock) { _state.SessionEpoch = value; Save(); } }
+    }
 
     public void Pair(ulong address, string name, BluetoothAddressType addressType)
     {

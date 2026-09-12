@@ -98,6 +98,8 @@
   <div class="row">
     <label><input type="checkbox" id="devVoice"> 답변을 기기 스피커로도 (answer mode)</label>
     <button class="ghost" id="btnDevStop">Stop</button>
+    <button class="ghost" id="btnNewChat">새 대화</button>
+    <span id="sessionTag"></span>
   </div>
   <div class="row">
     <input type="text" id="devSay" value="아몰레드 기기 스피커 테스트입니다.">
@@ -134,6 +136,7 @@ async function refresh() {
     'last error': b.lastError || '-', 'capture': s.conversation.capture, 'device hello': s.conversation.device || '-',
     'last transcript': s.conversation.lastTranscript || '-', 'last reply': s.conversation.lastReply || '-',
   });
+  $('#sessionTag').textContent = 'session: ' + (s.conversation.session || '-');
   $('#sttInfo').innerHTML = kv({ 'model': s.stt.modelPath, 'downloaded': s.stt.downloaded, 'status': s.stt.status });
 }
 function kv(o) { return Object.entries(o).map(([k, v]) => `<div>${k}</div><div>${esc(String(v))}</div>`).join(''); }
@@ -232,6 +235,11 @@ $('#devVoice').onchange = async () => {
     : ($('#devVoice').checked ? '답변 모드: 텍스트+음성' : '답변 모드: 텍스트');
 };
 $('#btnDevStop').onclick = async () => { const r = await post('/api/device/stop'); $('#devOut').textContent = r.cancelled ? '진행 중이던 요청을 중단했습니다.' : '중단할 요청이 없습니다.'; };
+$('#btnNewChat').onclick = async () => {
+  const r = await post('/api/session/reset');
+  $('#devOut').textContent = '새 대화를 시작했습니다: ' + r.session + '\n(이전 대화는 챗 CLI 쪽에 그대로 남아 있습니다.)';
+  refresh();
+};
 $('#btnDevSay').onclick = async () => {
   $('#devOut').textContent = '합성 후 기기로 전송 중…';
   const r = await post('/api/device/speak', { line: $('#devSay').value });

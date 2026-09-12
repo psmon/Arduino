@@ -27,9 +27,9 @@ Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one
 |---|---|---|
 | `S` | HUD status (unchanged, from Claude Code statusLine) | as before |
 | `E` | HUD event (unchanged, from Claude Code hooks) | as before |
-| `H` | host hello, sent once when the link comes up | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"v":1}` |
+| `H` | host hello, sent once when the link comes up | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"tts":true,"chat":1,"v":3}` |
 | `A` | answer / progress for request `id` | see stages below |
-| `C` | remote control of the on-screen app (test aid) | `{"cmd":"talk","ms":5000}` · `{"cmd":"text","text":"..."}` · `{"cmd":"clear"}` |
+| `C` | remote control of the on-screen app (test aid) | `{"cmd":"talk","ms":5000}` · `{"cmd":"text","text":"..."}` · `{"cmd":"mode","voice":true}` · `{"cmd":"newchat"}` · `{"cmd":"clear"}` |
 
 The greeting is one round trip and one direction only: host sends `H` on connect, the device answers `R hello`,
 and the host does **not** answer that with another `H`. Replying to the reply ping-pongs forever.
@@ -45,6 +45,7 @@ and the host does **not** answer that with another `H`. Replying to the reply pi
 | `speak` | spoken answer follows as `0xA6` frames | `fmt`, `rate`, `ch`, `frames`, `ms` |
 | `speak_end` | all speech frames sent; the device plays what it buffered | `text` only on failure |
 | `idle` | nothing is running any more (answer to `cancel`) | – |
+| `session` | the conversation changed; the device clears its bubbles | `n` (1-based conversation number) |
 | `err` | request failed / no speech / audio decode error | `text` |
 | `busy` | legacy; the host preempts instead of refusing, so this should not appear | – |
 | `pong` | reply to `ping` | – |
@@ -63,6 +64,7 @@ All device lines use tag `R`:
 | `voice` | `{"t":"voice","id":n,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false}` | begin an utterance; then send audio frames with this `id` |
 | `end` | `{"t":"end","id":n}` | utterance finished → host runs STT → chat → `A` stages |
 | `cancel` | `{"t":"cancel","id":n}` | drop the capture, the host request and any answer audio |
+| `newsession` | `{"t":"newsession","id":n}` | leave this conversation and start a fresh one |
 
 `tts` is the device's answer-mode setting: `false` = text only, `true` = text plus a spoken answer. The host
 advertises whether it can speak at all in its `H` line (`"tts":true`); the device hides the setting when it

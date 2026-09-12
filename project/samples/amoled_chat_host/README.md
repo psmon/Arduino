@@ -104,6 +104,7 @@ language auto-detect on the small model sometimes mis-hears synthetic English as
 | POST | `/api/device/mode?voice=true` | flip the device's answer mode (text, or text plus speech) |
 | POST | `/api/device/speak` `{line}` | synthesise text and play it on the device speaker |
 | POST | `/api/device/stop` | cancel whatever is running |
+| POST | `/api/device/newchat` | ask the device to start a new conversation |
 | POST | `/api/device/clear` | clear the device screen |
 | POST | `/api/session/reset` | abandon the CLI conversation and start a fresh session id |
 | POST | `/status` · `/event` | HUD passthrough, identical to `ble_bridge.py` |
@@ -128,12 +129,39 @@ The host reports whether it has any voice installed in its greeting, and the dev
 it does not. `POST /api/device/mode?voice=true` flips it remotely, and `POST /api/device/speak` plays
 arbitrary text without involving a chat CLI.
 
+## Where the conversation lives
+
+**Not here.** The host keeps no history: every request is one process call carrying the prompt and a
+session id. The chat CLI owns the conversation — netclaw resumes it by id, stores it under
+`~/.netclaw/logs/<session>.log`, and re-sends the accumulated context to the model on every turn, so input
+tokens grow turn by turn. Verified: the same id remembers a fact told two turns earlier, a different id does
+not. That also means a "new chat" deletes nothing; it just stops resuming the old id.
+
+The id is `amoled-<bluetooth address>`, plus `-N` once the conversation has been rotated N times. The host
+persists N in `%LOCALAPPDATA%\AmoledChatHost\state.json`, so restarting it does not quietly drag the person
+back into a conversation they deliberately left.
+
+Three things start a new one: the **새 대화** pill on the device, `POST /api/session/reset`, and the host
+itself when a session stops answering (a wedged CLI session heals by moving on rather than failing forever).
+
+Session support is per provider. netclaw carries memory; the bundled `claude` and `echo` entries pass no
+session arguments, so every call there is already a fresh conversation.
+
 ## One request at a time, newest wins
 
 A second question preempts the first instead of being refused, so the device no longer shows "host busy".
 See PROTOCOL.md for why the abandoned CLI child is left to die on its own rather than killed.
 
 ## Things that bite
+
+- **The device's BLE task needs a bigger stack.** The chat app's line and frame hooks run on the NimBLE
+  host task, on top of its 600-byte reassembly buffer, cJSON parsing and log formatting. The 4 KB default
+  overflowed and rebooted the board; `CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192` plus keeping outbound
+  lines off that stack fixed it.
+- **Answer audio needs two buffers.** BLE delivers the next answer's speech about four times faster than
+  the speaker plays the current one, so a single buffer had the new frames overwriting the audio being
+  played: a 17 s answer came out as 3.6 s. The device fills one buffer while the other plays.
+
 
 - **BLE has one owner.** `ble_bridge.py` and this host cannot both run. `install.ps1` stops the bridge.
 - **Lines go out as raw UTF-8**, not `\uXXXX`. The default .NET encoder doubles a Korean payload, which

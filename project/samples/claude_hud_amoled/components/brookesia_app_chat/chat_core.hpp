@@ -25,6 +25,7 @@ struct Snapshot {
     bool     bleConnected = false;
     bool     micOk = false;
     bool     hostTts = false;          // host reported a usable TTS voice in its hello
+    int      chatNo = 1;               // which conversation the host has us on (1-based)
     AnswerMode mode = AnswerMode::TextOnly;
     float    level = 0;                // 0..1 input level while recording
     uint32_t recMs = 0;                // recording length so far
@@ -43,6 +44,7 @@ public:
     void stopVoice();                  // end capture -> host runs STT + chat
     bool sendText(const char *text);   // typed/preset prompt
     void cancel();                     // stop recording / playback and tell the host to drop the request
+    void newChat();                    // start a fresh conversation (the CLI keeps the old one, we just leave it)
     void clear();                      // clear transcript/reply
 
     AnswerMode mode();                 // persisted in NVS
@@ -77,11 +79,17 @@ private:
     void      *txTask_ = nullptr;      // TaskHandle_t (outbound lines)
     void      *txQueue_ = nullptr;     // QueueHandle_t of TxMsg
 
-    // answer audio: decoded into PSRAM as frames arrive, played once the host says it is done
+    // Answer audio: decoded into PSRAM as frames arrive, played once the host says it is done.
+    // Two buffers, because the next answer's frames start arriving long before the current one has
+    // finished playing (BLE delivers ~4x faster than the speaker consumes). One buffer meant the new
+    // frames overwrote the audio being played, and the tail of a 17 s answer came out as 3.6 s.
     void      *spk_ = nullptr;         // esp_codec_dev_handle_t (opened lazily)
     void      *playTask_ = nullptr;
-    uint8_t   *spkBuf_ = nullptr;      // PCM16 @16 kHz
-    size_t     spkCap_ = 0, spkLen_ = 0;
+    uint8_t   *spkBuf_[2] = {nullptr, nullptr};   // PCM16 @16 kHz
+    size_t     spkLen_[2] = {0, 0};
+    int        fillIdx_ = 0;           // buffer the frame hook writes into
+    volatile int playIdx_ = -1;        // buffer the play task holds, -1 = none
+    int        pendingIdx_ = -1;       // buffer waiting to be played
     int        spkId_ = -1;
     int        spkLastSeq_ = -1;
     volatile bool playReady_ = false;  // buffer complete, playTask may start

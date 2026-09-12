@@ -29,6 +29,7 @@ public sealed class ConversationService
         public readonly Stopwatch Timer = Stopwatch.StartNew();
     }
 
+    private readonly PairingStore _store;
     private readonly BleLink _link;
     private readonly ISpeechToText _stt;
     private readonly WindowsTts _tts;
@@ -65,26 +66,40 @@ public sealed class ConversationService
         get { lock (_capLock) return _cap is null ? "idle" : $"id={_cap.Id} {_cap.Fmt}@{_cap.Rate} {_cap.Data.Length} B in {_cap.Frames} frames (gaps {_cap.Gaps})"; }
     }
 
-    public ConversationService(BleLink link, ISpeechToText stt, WindowsTts tts, ChatProviderRegistry chat,
-        IOptions<SttOptions> sttOpt, IOptions<BleOptions> bleOpt, ILogger<ConversationService> log)
+    public ConversationService(BleLink link, PairingStore store, ISpeechToText stt, WindowsTts tts,
+        ChatProviderRegistry chat, IOptions<SttOptions> sttOpt, IOptions<BleOptions> bleOpt,
+        ILogger<ConversationService> log)
     {
-        _link = link; _stt = stt; _tts = tts; _chat = chat; _sttOpt = sttOpt.Value; _bleOpt = bleOpt.Value; _log = log;
+        _link = link; _store = store; _stt = stt; _tts = tts; _chat = chat;
+        _sttOpt = sttOpt.Value; _bleOpt = bleOpt.Value; _log = log;
         _link.Connected += () => _ = SendHelloAsync();
         _link.LineReceived += OnLine;
         _link.FrameReceived += OnFrame;
     }
 
-    // The CLI session id doubles as the conversation's identity. If a provider wedges one (a killed
-    // client can leave netclaw's daemon session half-open), the next attempt moves to a fresh id rather
-    // than failing forever; the cost is losing that conversation's history, which beats losing the device.
-    private int _sessionEpoch;
+    // The CLI session id doubles as the conversation's identity: the provider resumes it on every
+    // request, so history (and token cost) accumulate there until something starts a new one. Two things
+    // do: the person asking for a new chat, and a wedged session healing itself. The epoch is persisted,
+    // otherwise restarting the host would quietly drag the person back into the conversation they left.
+    public int SessionEpoch => _store.SessionEpoch;
     public string DeviceSession =>
-        "amoled-" + (_link.IsConnected ? _link.AddressHex : "device") + (_sessionEpoch == 0 ? "" : $"-{_sessionEpoch}");
+        "amoled-" + (_link.IsConnected ? _link.AddressHex : "device") +
+        (SessionEpoch == 0 ? "" : $"-{SessionEpoch}");
 
-    public void RotateSession()
+    /// <summary>Start a fresh conversation. Returns the new session id.</summary>
+    public string RotateSession(string why)
     {
-        _sessionEpoch++;
-        _log.LogWarning("chat session rotated -> {Session} (previous one stopped answering)", DeviceSession);
+        _store.SessionEpoch = SessionEpoch + 1;
+        _log.LogInformation("chat session -> {Session} ({Why})", DeviceSession, why);
+        _ = SendSessionAsync();
+        return DeviceSession;
+    }
+
+    /// <summary>Tell the device which conversation it is on, so its screen can say so.</summary>
+    private Task<bool> SendSessionAsync()
+    {
+        var js = new JsonObject { ["id"] = 0, ["st"] = "session", ["n"] = SessionEpoch + 1 };
+        return _link.SendLineAsync("A " + js.ToJsonString(LineJson));
     }
 
     // ------------------------------------------------------------ inbound
@@ -163,6 +178,12 @@ public sealed class ConversationService
                 StartRequest(id, pcm, null, cap.Lang, cap.Tts);
                 break;
             }
+
+            case "newsession":
+                _log.LogInformation("device asked for a new conversation");
+                CancelCurrent("starting a new conversation");
+                RotateSession("asked from the device");
+                break;
 
             case "cancel":
                 lock (_capLock) { if (_cap?.Id == id) _cap = null; }
@@ -287,7 +308,7 @@ public sealed class ConversationService
             _log.LogError("request #{Id} failed: {Msg}", id, ex.Message);
             // An unusable answer usually means the provider's session is wedged, not that the question
             // was bad, so move to a fresh session and let the person simply ask again.
-            if (ex is InvalidOperationException or TimeoutException) RotateSession();
+            if (ex is InvalidOperationException or TimeoutException) RotateSession("previous one stopped answering");
             await SendAsync(id, "err", ex.Message);
         }
     }
@@ -365,7 +386,8 @@ public sealed class ConversationService
             ["stt"] = _stt.ProviderName,
             ["sttReady"] = _stt.IsReady,
             ["tts"] = _tts.Available,          // device hides the speech setting when the host has no voice
-            ["v"] = 2,
+            ["chat"] = SessionEpoch + 1,       // which conversation we are on, for the device's screen
+            ["v"] = 3,
         };
         return _link.SendLineAsync("H " + js.ToJsonString(LineJson));
     }

@@ -41,8 +41,12 @@ static const char *PRESET_TEXT = "안녕! 지금 몇 시인지 한 문장으로 
 
 // Layout tuned to the 466x466 circle: at a given y the usable half-width is sqrt(233^2 - (y-233)^2),
 // so anything near the top or the bottom has to stay narrow or the bezel clips it.
-static constexpr int W_HOST = 210, Y_HOST  = 32;
-static constexpr int W_MODE = 200, Y_MODE  = 56, H_MODE = 28;
+static constexpr int W_HOST = 232, Y_HOST  = 30;
+// Top row holds two pills: the answer-mode toggle and "new chat". Widths are picked so the pair stays
+// inside the circle at this y (usable half-width there is about 149 px).
+static constexpr int Y_MODE = 56, H_MODE = 28;
+static constexpr int W_MODE = 146, X_MODE = -46;
+static constexpr int W_NEW  = 84,  X_NEW  = 77;
 static constexpr int W_BOX  = 344, Y_BOX   = 92, H_BOX  = 182;
 static constexpr int Y_STAGE = 282, Y_BAR  = 308;
 static constexpr int MIC_D  = 88,  Y_MIC   = 324;
@@ -125,6 +129,10 @@ void VoiceChat::modeEvent(lv_event_t *)
     c.setMode(c.mode() == AnswerMode::TextAndVoice ? AnswerMode::TextOnly : AnswerMode::TextAndVoice);
 }
 
+// The chat CLI owns the conversation history (netclaw resumes it by session id), so this only asks the
+// host to move to a fresh id. The previous conversation is not deleted, just left behind.
+void VoiceChat::newChatEvent(lv_event_t *) { Core::instance().newChat(); }
+
 // ---------------------------------------------------------------- UI helpers
 static lv_obj_t *mkLabel(lv_obj_t *parent, const char *txt, const lv_font_t *font, uint32_t color)
 {
@@ -165,9 +173,13 @@ void VoiceChat::buildUi(lv_obj_t *scr)
 
     // the setting: text answer only, or text plus a spoken answer through the speaker
     _btnMode = mkBtn(scr, W_MODE, H_MODE, H_MODE / 2, C_DIM, modeEvent, LV_EVENT_CLICKED);
-    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, 0, Y_MODE);
-    _lblMode = mkLabel(_btnMode, "답변: 텍스트", &font_nanum_18, C_GRAY);
+    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, X_MODE, Y_MODE);
+    _lblMode = mkLabel(_btnMode, "텍스트만", &font_nanum_18, C_GRAY);
     lv_obj_center(_lblMode);
+
+    _btnNew = mkBtn(scr, W_NEW, H_MODE, H_MODE / 2, C_DIM, newChatEvent, LV_EVENT_CLICKED);
+    lv_obj_align(_btnNew, LV_ALIGN_TOP_MID, X_NEW, Y_MODE);
+    lv_obj_center(mkLabel(_btnNew, "새 대화", &font_nanum_18, C_GRAY));
 
     // middle: conversation box (scrollable)
     _box = lv_obj_create(scr);
@@ -233,16 +245,17 @@ void VoiceChat::refresh()
     _seen = v;
 
     char buf[192];
-    if (!s.bleConnected)    snprintf(buf, sizeof(buf), "BLE 연결 대기 중");
-    else if (!s.hostOnline) snprintf(buf, sizeof(buf), "호스트 응답 대기");
-    else                    snprintf(buf, sizeof(buf), "%s · %s", s.host, s.provider);
+    if (!s.bleConnected)      snprintf(buf, sizeof(buf), "BLE 연결 대기 중");
+    else if (!s.hostOnline)   snprintf(buf, sizeof(buf), "호스트 응답 대기");
+    else if (s.chatNo > 1)    snprintf(buf, sizeof(buf), "%s · %s · 대화 %d", s.host, s.provider, s.chatNo);
+    else                      snprintf(buf, sizeof(buf), "%s · %s", s.host, s.provider);
     lv_label_set_text(_lblHost, buf);
 
     // the answer-mode pill only means something when the host actually has a voice installed
     if (s.hostTts) {
         lv_obj_remove_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
         bool voice = s.mode == AnswerMode::TextAndVoice;
-        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX " 답변: 텍스트+음성" : "답변: 텍스트");
+        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX " 텍스트+음성" : "텍스트만");
         lv_obj_set_style_text_color(_lblMode, lv_color_hex(voice ? C_PURPLE : C_GRAY), 0);
         lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), 0);
         lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), LV_STATE_PRESSED);

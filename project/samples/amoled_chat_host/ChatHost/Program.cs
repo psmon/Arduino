@@ -234,10 +234,11 @@ app.MapPost("/api/device/mode", async (BleLink link, bool? voice) =>
 
 // Abandon the current CLI conversation and start a fresh one (loses that session's history).
 app.MapPost("/api/session/reset", (ConversationService conv) =>
-{
-    conv.RotateSession();
-    return Results.Json(new { session = conv.DeviceSession });
-});
+    Results.Json(new { session = conv.RotateSession("reset from the host") }));
+
+// Ask the device to start a new conversation (same thing its "new chat" pill does).
+app.MapPost("/api/device/newchat", async (BleLink link) =>
+    Results.Json(new { ok = await link.SendLineAsync("C {\"cmd\":\"newchat\"}") }));
 
 // Stop whatever the host is doing for the device right now.
 app.MapPost("/api/device/stop", (ConversationService conv) =>
