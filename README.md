@@ -1,5 +1,7 @@
 # Arduino — Waveshare ESP32-S3-LCD-1.28 / ESP32-S3-Touch-AMOLED-1.75C
 
+한국어 · *[English](README.en.md)*
+
 > **두 기기**를 다룬다. ① 원조 **LCD-1.28** (Arduino IDE, 아래 안내) ② 2026-09 도입한 **AMOLED-1.75C** (ESP-IDF + ESP-Brookesia, [아래 절](#amoled-175c-esp-idf--esp-brookesia--주력-기기) 참고). 현재 **주력은 AMOLED-1.75C** 이며 Brookesia 앱을 계속 증설할 예정.
 
 Waveshare **ESP32-S3-LCD-1.28** (원형 240×240 GC9A01 IPS LCD, QMI8658 IMU) 보드로
@@ -84,7 +86,7 @@ venv\Scripts\python -m pip install -r requirements.txt
 | **`ble_lcd/`** | BLE Nordic UART Service(NUS) 서버. 폰/PC에서 보낸 UTF-8 문자열을 원형 화면에 표시. 한글은 U8g2 유니폰트(`u8g2_font_unifont_t_korean1`)로 렌더링. **Huge APP 파티션 필요** |
 | **`ble_pc/`** | PC(Windows)에서 BLE로 글자를 보내는 Python 도구(`bleak`)<br>· `send_ble.py "text"` — 한 번 전송 / 인자 없으면 대화식<br>· `greet.py` — 7개국 인사말 연속 전송(폰트 커버리지 테스트)<br>· `ascii_art.py` — 자유 텍스트 · ASCII 아트 · 표정/스피너/바운스 애니메이션 |
 | **`claude_hud/`** | (LCD-1.28) Claude Code 진행상황+사용량 HUD. USB 시리얼 + BLE + WiFi HTTP 3종 수신. PC 설치기 `pc/install.ps1` |
-| **`claude_hud_amoled/`** | **(AMOLED-1.75C, ESP-IDF) 주력.** ESP-Brookesia phone UI 에 "Claude HUD" 앱 추가. **BLE 단일 전송**, PC 는 `pc/ble_bridge.py` 상시 연결 + `pc/install.ps1`. 앱 증설의 기준 프로젝트 |
+| **`claude_hud_amoled/`** | **(AMOLED-1.75C, ESP-IDF) 주력.** ESP-Brookesia phone UI 에 앱 3개(Claude HUD / Chat / Settings) 추가. **BLE 단일 전송**. 앱 증설의 기준 프로젝트 |
 | **`amoled_chat_host/`** | **(AMOLED-1.75C, PC 측) 음성 챗봇 호스트.** ASP.NET Core 가 BLE 연결을 쥐고 기기 마이크 음성을 Whisper 로 받아쓴 뒤 등록된 챗 CLI(`netclaw chat -p` 기본)에 물어 답을 화면으로 돌려준다. HUD 훅용 `/status`·`/event` 도 그대로 제공하므로 `claude_hud_amoled/pc/ble_bridge.py` 를 **대체**한다 |
 | **`selfcheck/`** | 배포 후 **셀프체크/스모크 테스트**. 펌웨어가 `[SELFCHECK]` 상태를 Serial로 내보내고 `selfcheck.ps1`이 PASS/FAIL 판정(종료코드). 자세히는 해당 폴더 README |
 

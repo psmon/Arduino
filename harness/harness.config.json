@@ -3,9 +3,9 @@
   "$schemaVersion": "1.2.0",
   "name": "Arduino Embedded Harness",
   "description": "ESP32-S3 보드용 Arduino/ESP-IDF 펌웨어와 PC측 BLE 브리지·훅 스크립트의 품질 점검 워크플로우",
-  "version": "1.0.0",
-  "agents": ["tamer"],
-  "engine": [],
+  "version": "1.1.0",
+  "agents": ["tamer", "device-resource-warden", "ble-contract-sentinel"],
+  "engine": ["full-review"],
   "created": "2026-09-12",
-  "lastUpdated": "2026-09-12"
+  "lastUpdated": "2026-09-13"
 }

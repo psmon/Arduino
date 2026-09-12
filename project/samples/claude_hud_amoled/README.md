@@ -1,5 +1,7 @@
 # claude_hud_amoled — Claude Code HUD as an ESP-Brookesia app (Bluetooth only)
 
+한국어 · *[English](README.en.md)*
+
 Waveshare **ESP32-S3-Touch-AMOLED-1.75C**(466×466 원형 AMOLED, ESP32-S3R8, 32MB flash, 8MB PSRAM)의
 공장 펌웨어인 **ESP-Brookesia phone UI**에 "Claude HUD" 앱(위젯)을 추가한 ESP-IDF 프로젝트.
 런처에 아이콘이 생기고, 열면 3개 타일을 좌우 스와이프로 본다.
