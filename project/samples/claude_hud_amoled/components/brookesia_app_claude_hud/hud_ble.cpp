@@ -8,11 +8,15 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <algorithm>
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "host/ble_att.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
@@ -34,6 +38,11 @@ static const ble_uuid128_t NUS_TX_UUID = BLE_UUID128_INIT(
 static uint16_t    s_txHandle = 0;
 static uint8_t     s_ownAddrType = 0;
 static std::string s_rxBuf;
+static uint16_t    s_connHandle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t    s_mtu = 23;
+static bool        s_txSubscribed = false;
+static bool        s_started = false;
+static LineHook    s_lineHook = nullptr;
 
 static void setErr(const char *msg, int rc)
 {
@@ -48,9 +57,12 @@ static void feed(const char *data, size_t len)
     s_rxBuf.append(data, len);
     // Split on newlines; a chunk that ends with '}' without a newline is also treated as complete.
     auto accept = [&](size_t n) {
-        bool ok = st.handleLine(s_rxBuf.data(), n);
+        char tag = s_rxBuf[0];
+        bool ok;
+        if (tag == 'S' || tag == 'E') ok = st.handleLine(s_rxBuf.data(), n);
+        else                          ok = s_lineHook ? s_lineHook(s_rxBuf.data(), n) : false;
         if (ok) { st.net.rxBle++; st.net.lastRxMs = nowMs(); }
-        ESP_LOGI(TAG, "rx %c %u bytes -> %s (total %lu)", s_rxBuf[0], (unsigned)n, ok ? "ok" : "rejected",
+        ESP_LOGI(TAG, "rx %c %u bytes -> %s (total %lu)", tag, (unsigned)n, ok ? "ok" : "rejected",
                  (unsigned long)st.net.rxBle);
     };
     for (;;) {
@@ -104,13 +116,17 @@ static int gapEvent(struct ble_gap_event *ev, void *)
     case BLE_GAP_EVENT_CONNECT:
         if (ev->connect.status == 0) {
             net.bleConn = true; net.bleAdv = false;
-            ESP_LOGI(TAG, "central connected");
+            s_connHandle = ev->connect.conn_handle;
+            s_txSubscribed = false;
+            ESP_LOGI(TAG, "central connected (handle %u)", s_connHandle);
         } else {
             advertise();
         }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         net.bleConn = false;
+        s_connHandle = BLE_HS_CONN_HANDLE_NONE;
+        s_txSubscribed = false;
         ESP_LOGI(TAG, "central disconnected (reason %d); advertising again", ev->disconnect.reason);
         s_rxBuf.clear();
         advertise();
@@ -119,7 +135,14 @@ static int gapEvent(struct ble_gap_event *ev, void *)
         advertise();
         break;
     case BLE_GAP_EVENT_MTU:
+        s_mtu = ev->mtu.value;
         ESP_LOGI(TAG, "MTU %u", ev->mtu.value);
+        break;
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        if (ev->subscribe.attr_handle == s_txHandle) {
+            s_txSubscribed = ev->subscribe.cur_notify;
+            ESP_LOGI(TAG, "TX notify %s", s_txSubscribed ? "subscribed" : "unsubscribed");
+        }
         break;
     default:
         break;
@@ -176,8 +199,50 @@ static void hostTask(void *)
     nimble_port_freertos_deinit();
 }
 
+bool bleConnected() { return s_connHandle != BLE_HS_CONN_HANDLE_NONE; }
+int  bleMaxPayload()
+{
+    // Ask the stack rather than trusting the cached value: the MTU-exchange event can arrive before
+    // (or well after) the connect event, so a cached copy is easily stale or reset to the 23-byte default.
+    uint16_t mtu = bleConnected() ? ble_att_mtu(s_connHandle) : 0;
+    if (mtu < 23) mtu = s_mtu;
+    int n = (int)mtu - 3;
+    return n < 20 ? 20 : n;
+}
+void setLineHook(LineHook hook) { s_lineHook = hook; }
+
+bool bleNotify(const uint8_t *data, size_t len)
+{
+    if (!bleConnected() || !s_txSubscribed || len == 0) return false;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, (uint16_t)len);
+    if (!om) return false;
+    int rc = ble_gatts_notify_custom(s_connHandle, s_txHandle, om);   // consumes om
+    if (rc) ESP_LOGD(TAG, "notify rc=%d", rc);
+    return rc == 0;
+}
+
+bool bleSendLine(const char *line, size_t len)
+{
+    if (!bleConnected() || !s_txSubscribed) return false;
+    std::string buf(line, len);
+    if (buf.empty() || buf.back() != '\n') buf.push_back('\n');
+    const size_t chunk = (size_t)bleMaxPayload();
+    for (size_t off = 0; off < buf.size(); off += chunk) {
+        size_t n = std::min(chunk, buf.size() - off);
+        bool ok = false;
+        for (int retry = 0; retry < 20 && !ok; retry++) {          // controller buffers can be momentarily full
+            ok = bleNotify((const uint8_t *)buf.data() + off, n);
+            if (!ok) vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (!ok) { ESP_LOGW(TAG, "tx line dropped (%u bytes)", (unsigned)n); return false; }
+    }
+    return true;
+}
+
 void startBle()
 {
+    if (s_started) return;
+    s_started = true;
     esp_err_t r = nvs_flash_init();  // NimBLE/PHY calibration data lives in NVS
     if (r == ESP_ERR_NVS_NO_FREE_PAGES || r == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();

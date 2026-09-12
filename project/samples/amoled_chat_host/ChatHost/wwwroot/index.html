@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AMOLED Chat Host</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --dim:#8b93a7; --ok:#3ddc84; --bad:#ff6b6b; --acc:#5b8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, "Segoe UI", sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; }
+  header h1 { font-size:16px; margin:0; }
+  .pill { padding:2px 10px; border-radius:999px; font-size:12px; border:1px solid var(--line); color:var(--dim); }
+  .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.bad { color:var(--bad); border-color:var(--bad); }
+  main { display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:14px; padding:14px 20px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 10px; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text], textarea, select { width:100%; background:#0c0e12; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px; font:inherit; }
+  textarea { min-height:70px; resize:vertical; }
+  table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:5px 6px; border-bottom:1px solid var(--line); text-align:left; }
+  .row { display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap:wrap; }
+  .kv { display:grid; grid-template-columns:120px 1fr; gap:2px 10px; font-size:13px; } .kv div:nth-child(odd) { color:var(--dim); }
+  pre { background:#0c0e12; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin:8px 0 0; }
+  .out { background:#0c0e12; border:1px solid var(--line); border-radius:6px; padding:8px; min-height:40px; white-space:pre-wrap; margin-top:8px; }
+  .wide { grid-column: 1 / -1; }
+  small { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AMOLED Chat Host</h1>
+  <span id="pillBle" class="pill">BLE …</span>
+  <span id="pillStt" class="pill">STT …</span>
+  <span id="pillChat" class="pill">chat …</span>
+  <span id="pillBusy" class="pill" hidden>working…</span>
+</header>
+<main>
+
+<section>
+  <h2>Device pairing (Bluetooth)</h2>
+  <div class="kv" id="bleInfo"></div>
+  <div class="row">
+    <button id="btnScan">Scan (5 s)</button>
+    <button class="ghost" id="btnConnect">Connect paired</button>
+    <button class="ghost" id="btnDisconnect">Disconnect</button>
+    <button class="ghost" id="btnUnpair">Unpair</button>
+  </div>
+  <table id="scanTable"><thead><tr><th>Name</th><th>Address</th><th>Type</th><th>RSSI</th><th></th></tr></thead><tbody></tbody></table>
+  <small>Pairing = the host remembers this one device and reconnects to it only. No OS-level Bluetooth pairing is needed for the NUS link.</small>
+</section>
+
+<section>
+  <h2>Chat provider (CLI)</h2>
+  <div id="providers"></div>
+  <small>Providers are registered in <code>appsettings.json → Chat:Providers</code>. The selection here is persisted.</small>
+  <h2 style="margin-top:14px">Text chat test</h2>
+  <textarea id="chatText" placeholder="프롬프트를 입력…">안녕, 지금 몇 시야?</textarea>
+  <div class="row">
+    <button id="btnChat">Send</button>
+    <label><input type="checkbox" id="chatToDevice"> also push reply to device</label>
+    <span id="chatMs"></span>
+  </div>
+  <div class="out" id="chatOut"></div>
+</section>
+
+<section>
+  <h2>Voice test (browser mic → host STT → chat)</h2>
+  <div class="kv" id="sttInfo"></div>
+  <div class="row">
+    <button id="btnRec">● Record</button>
+    <button class="ghost" id="btnStop" disabled>■ Stop &amp; send</button>
+    <label><input type="checkbox" id="voiceToDevice"> push reply to device</label>
+    <select id="lang" style="width:auto"><option value="">lang: auto</option><option value="ko">ko</option><option value="en">en</option><option value="ja">ja</option></select>
+  </div>
+  <div class="row">
+    <input type="file" id="wavFile" accept=".wav,audio/wav">
+    <button class="ghost" id="btnWav">Send WAV</button>
+    <button class="ghost" id="btnPreload">Preload STT</button>
+  </div>
+  <div class="out" id="voiceOut"></div>
+</section>
+
+<section>
+  <h2>Device remote (device mic → host)</h2>
+  <small>Runs the same pipeline the on-screen hold-to-talk button uses, without touching the device.</small>
+  <div class="row">
+    <button id="btnTalk">Record on device</button>
+    <select id="talkMs" style="width:auto"><option value="3000">3 s</option><option value="5000" selected>5 s</option><option value="8000">8 s</option></select>
+    <button class="ghost" id="btnDevClear">Clear screen</button>
+  </div>
+  <div class="row">
+    <input type="text" id="devText" value="오늘 서울 날씨 한 문장으로 알려줘">
+    <button class="ghost" id="btnDevText">Send as device prompt</button>
+  </div>
+  <div class="out" id="devOut">기기 화면에 결과가 표시됩니다.</div>
+</section>
+
+<section class="wide">
+  <h2>Host log <button class="ghost" id="btnLog" style="float:right">refresh</button></h2>
+  <pre id="log"></pre>
+</section>
+
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const j = async (url, opt) => { const r = await fetch(url, opt); const t = await r.text(); try { return JSON.parse(t); } catch { return { error: t || r.statusText }; } };
+const post = (url, body) => j(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+
+async function refresh() {
+  const s = await j('/api/status');
+  if (s.error) return;
+  const b = s.ble;
+  $('#pillBle').textContent = b.connected ? `BLE ${b.device} (mtu ${b.mtu})` : 'BLE disconnected';
+  $('#pillBle').className = 'pill ' + (b.connected ? 'ok' : 'bad');
+  $('#pillStt').textContent = s.stt.ready ? `STT ${s.stt.provider}` : `STT ${s.stt.status}`;
+  $('#pillStt').className = 'pill ' + (s.stt.ready ? 'ok' : '');
+  $('#pillChat').textContent = 'chat ' + s.chat.provider;
+  $('#pillBusy').hidden = !s.conversation.busy;
+  $('#bleInfo').innerHTML = kv({
+    'paired': s.paired ? `${s.paired.name} [${s.paired.address}]` : '(none — auto-connects to first "claude-hud")',
+    'connected': b.connected ? `${b.device} [${b.address}] since ${new Date(b.since).toLocaleTimeString()}` : 'no',
+    'sent / dropped': `${b.sent} / ${b.dropped}`, 'rx lines / frames': `${b.rxLines} / ${b.rxFrames}`,
+    'last error': b.lastError || '-', 'capture': s.conversation.capture, 'device hello': s.conversation.device || '-',
+    'last transcript': s.conversation.lastTranscript || '-', 'last reply': s.conversation.lastReply || '-',
+  });
+  $('#sttInfo').innerHTML = kv({ 'model': s.stt.modelPath, 'downloaded': s.stt.downloaded, 'status': s.stt.status });
+}
+function kv(o) { return Object.entries(o).map(([k, v]) => `<div>${k}</div><div>${esc(String(v))}</div>`).join(''); }
+function esc(s) { return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+
+async function loadProviders() {
+  const list = await j('/api/providers');
+  $('#providers').innerHTML = list.map(p => `<label class="row"><input type="radio" name="prov" value="${p.name}" ${p.isDefault ? 'checked' : ''}> <b>${p.name}</b> <small>${esc(p.description || '')}</small></label>`).join('');
+  document.querySelectorAll('input[name=prov]').forEach(r => r.onchange = async () => { await fetch('/api/providers/default', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: r.value }) }); refresh(); });
+}
+
+async function loadLog() { const l = await j('/api/log?n=150'); if (Array.isArray(l)) { const p = $('#log'); p.textContent = l.join('\n'); p.scrollTop = p.scrollHeight; } }
+
+$('#btnScan').onclick = async () => {
+  $('#btnScan').disabled = true; $('#scanTable tbody').innerHTML = '<tr><td colspan=5>scanning…</td></tr>';
+  const list = await j('/api/ble/scan?seconds=5');
+  $('#scanTable tbody').innerHTML = (Array.isArray(list) && list.length ? list : []).map(d =>
+    `<tr><td>${esc(d.name)}</td><td><code>${d.address}</code></td><td>${d.addressType}</td><td>${d.rssi}</td><td><button data-a="${d.address}" data-n="${esc(d.name)}" data-t="${d.addressType}">Pair</button></td></tr>`).join('') || '<tr><td colspan=5>no named devices found</td></tr>';
+  document.querySelectorAll('#scanTable button').forEach(b => b.onclick = async () => { b.disabled = true; const r = await post('/api/ble/pair', { address: b.dataset.a, name: b.dataset.n, addressType: b.dataset.t }); alert(r.connected ? 'paired + connected' : 'paired; connect failed: ' + (r.error || '?')); refresh(); });
+  $('#btnScan').disabled = false;
+};
+$('#btnConnect').onclick = async () => { const r = await post('/api/ble/connect'); if (r.error) alert(r.error); refresh(); };
+$('#btnDisconnect').onclick = async () => { await post('/api/ble/disconnect'); refresh(); };
+$('#btnUnpair').onclick = async () => { await fetch('/api/ble/pair', { method: 'DELETE' }); refresh(); };
+
+$('#btnChat').onclick = async () => {
+  $('#btnChat').disabled = true; $('#chatOut').textContent = '…'; $('#chatMs').textContent = '';
+  const r = await post('/api/chat', { text: $('#chatText').value, toDevice: $('#chatToDevice').checked });
+  $('#chatOut').textContent = r.error ? 'ERROR: ' + r.error : r.response;
+  $('#chatMs').textContent = r.ms ? `${r.provider} · ${r.ms} ms${r.sentToDevice ? ' · sent to device' : ''}` : '';
+  $('#btnChat').disabled = false; loadLog();
+};
+
+// ---- browser mic → WAV (PCM16) → /api/voice-chat
+let ctx, proc, src, chunks = [], rate = 16000;
+$('#btnRec').onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    rate = ctx.sampleRate; chunks = [];
+    src = ctx.createMediaStreamSource(stream);
+    proc = ctx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(ctx.destination);
+    $('#btnRec').disabled = true; $('#btnStop').disabled = false; $('#voiceOut').textContent = `recording @ ${rate} Hz…`;
+    ctx._stream = stream;
+  } catch (e) { alert('mic: ' + e.message); }
+};
+$('#btnStop').onclick = async () => {
+  proc.disconnect(); src.disconnect(); ctx._stream.getTracks().forEach(t => t.stop()); await ctx.close();
+  $('#btnRec').disabled = false; $('#btnStop').disabled = true;
+  const n = chunks.reduce((a, c) => a + c.length, 0), pcm = new Int16Array(n); let o = 0;
+  for (const c of chunks) for (let i = 0; i < c.length; i++) pcm[o++] = Math.max(-1, Math.min(1, c[i])) * 32767;
+  await sendAudio(wav(pcm, rate));
+};
+function wav(pcm, sr) {
+  const b = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(b), w = (p, s) => { for (let i = 0; i < s.length; i++) v.setUint8(p + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(b, 44).set(pcm); return new Blob([b], { type: 'audio/wav' });
+}
+async function sendAudio(blob) {
+  $('#voiceOut').textContent = `sending ${(blob.size / 1024).toFixed(0)} KB → STT → chat…`;
+  const q = new URLSearchParams(); if ($('#lang').value) q.set('lang', $('#lang').value); if ($('#voiceToDevice').checked) q.set('toDevice', '1');
+  const r = await j('/api/voice-chat?' + q, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: blob });
+  $('#voiceOut').textContent = r.error && !r.transcript ? 'ERROR: ' + r.error : `🎤 ${r.transcript}\n(stt ${r.sttMs} ms)\n\n💬 ${r.response || r.error || ''}\n(${r.provider || ''} ${r.chatMs || ''} ms${r.sentToDevice ? ' · sent to device' : ''})`;
+  loadLog();
+}
+$('#btnWav').onclick = async () => { const f = $('#wavFile').files[0]; if (!f) return alert('choose a .wav'); await sendAudio(f); };
+$('#btnPreload').onclick = async () => { $('#voiceOut').textContent = 'loading model…'; const r = await post('/api/stt/preload'); $('#voiceOut').textContent = r.status; refresh(); };
+$('#btnLog').onclick = loadLog;
+
+$('#btnTalk').onclick = async () => {
+  const ms = $('#talkMs').value;
+  $('#devOut').textContent = `기기에서 ${ms / 1000}초 녹음 중…`;
+  const r = await post('/api/device/talk?ms=' + ms);
+  if (r.error) { $('#devOut').textContent = 'ERROR: ' + r.error; return; }
+  setTimeout(async () => {
+    const s = await j('/api/status');
+    $('#devOut').textContent = `🎤 ${s.conversation.lastTranscript || '(없음)'}
+
+💬 ${s.conversation.lastReply || '(대기 중)'}`;
+    loadLog();
+  }, Number(ms) + 12000);
+};
+$('#btnDevText').onclick = async () => {
+  $('#devOut').textContent = '전송 중…';
+  const r = await post('/api/device/text', { line: $('#devText').value });
+  $('#devOut').textContent = r.error ? 'ERROR: ' + r.error : '기기가 프롬프트를 보냈습니다. 화면을 보세요.';
+  loadLog();
+};
+$('#btnDevClear').onclick = async () => { await post('/api/device/clear'); $('#devOut').textContent = '기기 화면 초기화'; };
+
+refresh(); loadProviders(); loadLog();
+setInterval(refresh, 2000); setInterval(loadLog, 5000);
+</script>
+</body>
+</html>

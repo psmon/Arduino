@@ -1,0 +1,86 @@
+# AMOLED ↔ Host chat protocol (BLE NUS)
+
+Transport: the existing Nordic UART Service on the AMOLED firmware (`hud_ble.cpp`), unchanged UUIDs.
+
+| Direction | GATT | UUID |
+|---|---|---|
+| host → device | RX (write / write-no-rsp) | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` |
+| device → host | TX (notify) | `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` |
+
+Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one notification carries up to 509 bytes.
+
+## Two kinds of packets
+
+1. **Text line** — `<TAG> <json>\n`. Tag is one ASCII letter. Lines may be split across several BLE
+   packets; the receiver buffers until `\n`. The host never emits a line longer than `Ble:MaxLineBytes` (480).
+2. **Binary audio frame** — `0xA5 | id(1) | seq(2, little-endian) | payload`. One frame = exactly one notification.
+   `0xA5` cannot collide with a text line because every text tag is ASCII.
+
+## Host → device
+
+| Tag | Meaning | JSON |
+|---|---|---|
+| `S` | HUD status (unchanged, from Claude Code statusLine) | as before |
+| `E` | HUD event (unchanged, from Claude Code hooks) | as before |
+| `H` | host hello, sent on connect and in reply to a device hello | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"v":1}` |
+| `A` | answer / progress for request `id` | see stages below |
+
+`A` stages (`st`):
+
+| `st` | when | extra fields |
+|---|---|---|
+| `rec` | host accepted a `voice` begin and is collecting frames | – |
+| `stt` | (no `text`) transcription started · (with `text`) transcription result | `text` |
+| `think` | prompt handed to the chat CLI | – |
+| `reply` | answer chunk; UTF-8 safe split, concatenate in `seq` order | `seq`, `n`, `text`, `done:true` on the last chunk |
+| `err` | request failed / no speech / audio decode error | `text` |
+| `busy` | another request is still running — retry later | – |
+| `pong` | reply to `ping` | – |
+
+`id` = the request id the device chose. Answers pushed from the host web UI use `id: 0`.
+
+## Device → host
+
+All device lines use tag `R`:
+
+| `t` | JSON | notes |
+|---|---|---|
+| `hello` | `{"t":"hello","name":"claude-hud","fw":"1.0"}` | optional; host answers with `H` |
+| `ping` | `{"t":"ping","id":n}` | host answers `A {"id":n,"st":"pong"}` |
+| `text` | `{"t":"text","id":n,"text":"...","lang":"ko"}` | typed / preset prompt; `lang` optional |
+| `voice` | `{"t":"voice","id":n,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko"}` | begin an utterance; then send audio frames with this `id` |
+| `end` | `{"t":"end","id":n}` | utterance finished → host runs STT → chat → `A` stages |
+| `cancel` | `{"t":"cancel","id":n}` | drop the capture in progress |
+
+`fmt`:
+- `pcm16` — raw 16-bit little-endian PCM in every frame payload.
+- `adpcm` — IMA ADPCM, each frame payload is a **self-contained block**:
+  `[predictor int16 LE][step index u8][0][nibbles… low nibble first]`. Losing one notification costs one block only.
+  4:1 compression; the host self-test (`GET /api/selftest/adpcm`) shows ~33 dB SNR on a 440 Hz tone.
+  Reference encoder: `ChatHost/Stt/AudioConvert.cs` → `ImaAdpcm.EncodeBlock`.
+
+Recommended capture on the device: 16 kHz mono from `bsp_audio_codec_microphone_init()`, ADPCM blocks of
+480 samples (30 ms → 244-byte payload → fits one notification at MTU 247+; at MTU 512 use 960 samples/484 B).
+
+## Bandwidth reality
+
+| format | bytes / s | 5 s utterance | at ~40 kB/s NUS notify throughput |
+|---|---|---|---|
+| pcm16 16 kHz | 32 000 | 160 kB | ~4 s |
+| adpcm 16 kHz | 8 000 | 40 kB | ~1 s |
+
+Stream while recording (do not buffer the whole utterance first) so the transfer overlaps the speech.
+
+## Sequence
+
+```
+device                      host
+  R voice{id:7} ───────────▶  start capture        ◀── A {id:7,st:"rec"}
+  0xA5 07 0000 …  ─────────▶
+  0xA5 07 0001 …  ─────────▶  (frames)
+  R end{id:7}   ───────────▶  decode → STT         ◀── A {id:7,st:"stt"}
+                                                   ◀── A {id:7,st:"stt",text:"오늘 날씨 어때"}
+                              chat CLI (netclaw)   ◀── A {id:7,st:"think"}
+                                                   ◀── A {id:7,st:"reply",seq:0,n:2,text:"…"}
+                                                   ◀── A {id:7,st:"reply",seq:1,n:2,text:"…",done:true}
+```
