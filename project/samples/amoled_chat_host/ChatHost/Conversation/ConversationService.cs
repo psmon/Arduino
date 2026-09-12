@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ChatHost.Ble;
@@ -36,6 +37,12 @@ public sealed class ConversationService
     private readonly object _capLock = new();
     private Capture? _cap;
     private int _busy;
+
+    // Write Korean (and every other non-ASCII script) as real UTF-8 instead of \uXXXX. The default
+    // encoder doubles the size of a Korean payload, which pushes one reply line past a single BLE
+    // write and doubles the airtime. Quotes, backslashes and control characters are still escaped,
+    // and the consumer is cJSON on the device - never a browser - so relaxed escaping is safe here.
+    private static readonly JsonSerializerOptions LineJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     public int Handled, Errors;
     public string LastTranscript { get; private set; } = "";
@@ -91,6 +98,7 @@ public sealed class ConversationService
             {
                 var text = js["text"]?.GetValue<string>() ?? "";
                 var lang = js["lang"]?.GetValue<string>();
+                LastTranscript = text;          // so /api/status shows the prompt for typed requests too
                 _log.LogInformation("device text request #{Id}: {Text}", id, text);
                 StartRequest(id, null, text, lang);
                 break;
@@ -249,7 +257,7 @@ public sealed class ConversationService
             ["sttReady"] = _stt.IsReady,
             ["v"] = 1,
         };
-        return _link.SendLineAsync("H " + js.ToJsonString());
+        return _link.SendLineAsync("H " + js.ToJsonString(LineJson));
     }
 
     /// <summary>A {"id":..,"st":..[,"text":..]}</summary>
@@ -257,7 +265,7 @@ public sealed class ConversationService
     {
         var js = new JsonObject { ["id"] = id, ["st"] = stage };
         if (text != null) js["text"] = text;
-        return _link.SendLineAsync("A " + js.ToJsonString());
+        return _link.SendLineAsync("A " + js.ToJsonString(LineJson));
     }
 
     /// <summary>Send the answer as numbered chunks that each fit one line (≤ Ble:MaxLineBytes).</summary>
@@ -269,7 +277,7 @@ public sealed class ConversationService
         {
             var js = new JsonObject { ["id"] = id, ["st"] = "reply", ["seq"] = i, ["n"] = parts.Count, ["text"] = parts[i] };
             if (i == parts.Count - 1) js["done"] = true;
-            if (!await _link.SendLineAsync("A " + js.ToJsonString())) return false;
+            if (!await _link.SendLineAsync("A " + js.ToJsonString(LineJson))) return false;
         }
         return true;
     }

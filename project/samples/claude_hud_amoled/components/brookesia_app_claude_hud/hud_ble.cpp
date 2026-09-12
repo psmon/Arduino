@@ -51,6 +51,29 @@ static void setErr(const char *msg, int rc)
     ESP_LOGW(TAG, "%s", net.bleErr);
 }
 
+// True when [s, s+n) is one complete JSON object: braces balanced and the last one not inside a
+// string. Used to accept a line from a sender that omitted the trailing newline WITHOUT accepting a
+// line that merely happens to be cut after a '}' - which is what a long line split across several
+// BLE writes looks like.
+static bool completeObject(const char *s, size_t n)
+{
+    int depth = 0;
+    bool inStr = false, esc = false, seen = false;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (inStr) {
+            if (esc)            esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"')  inStr = false;
+            continue;
+        }
+        if (c == '"')      inStr = true;
+        else if (c == '{') { depth++; seen = true; }
+        else if (c == '}') { if (--depth < 0) return false; }
+    }
+    return seen && depth == 0 && !inStr;
+}
+
 static void feed(const char *data, size_t len)
 {
     auto &st = State::instance();
@@ -71,7 +94,8 @@ static void feed(const char *data, size_t len)
         if (nl > 0) accept(nl);
         s_rxBuf.erase(0, nl + 1);
     }
-    if (!s_rxBuf.empty() && s_rxBuf.back() == '}') {
+    if (s_rxBuf.size() > 2 && s_rxBuf.back() == '}' &&
+        completeObject(s_rxBuf.data() + 2, s_rxBuf.size() - 2)) {
         accept(s_rxBuf.size());
         s_rxBuf.clear();
     }

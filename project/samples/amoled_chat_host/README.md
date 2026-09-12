@@ -16,8 +16,8 @@ sends the answer back over the same BLE link.
                                            └──────────────────────────────────────────────┘
 ```
 
-Wire format: [PROTOCOL.md](PROTOCOL.md). Firmware side (chat app + mic streaming) is the next step and is
-**not** in this folder yet — the host is complete and tested through its HTTP API and web UI.
+Wire format: [PROTOCOL.md](PROTOCOL.md). The device side is the `Chat` app in
+`../claude_hud_amoled/components/brookesia_app_chat`, installed alongside the existing Claude HUD app.
 
 ## Requirements
 
@@ -27,18 +27,28 @@ Wire format: [PROTOCOL.md](PROTOCOL.md). Firmware side (chat app + mic streaming
 - Whisper model: `%USERPROFILE%\.ollama\models\agentzero\whisper\ggml-small.bin` (shared with AgentZeroLite).
   Missing → downloaded automatically on first start (`Stt:AutoDownload`, ~466 MB; `medium` ~1.5 GB).
 
-## Run
+## Install
 
 ```powershell
 cd project/samples/amoled_chat_host
-pwsh -File start_host.ps1            # build (Release) + run in this console
-pwsh -File start_host.ps1 -Background # start detached, log in ~/.claude/hud/chat_host.log
+pwsh -ExecutionPolicy Bypass -File install.ps1 -AutoStart
 ```
-Then open <http://127.0.0.1:8765/> — status, pairing, provider selection, text and voice tests, live log.
 
-**Only one program can own the BLE link.** Stop the old `claude_hud_amoled/pc/ble_bridge.py` before starting
-the host; the host serves the same `POST /status` / `POST /event` endpoints on the same port, so the Claude
-Code HUD hooks keep working unchanged.
+The installer builds the host, **stops `ble_bridge.py` and removes its startup shortcut** (BLE has a single
+owner), wires the Claude Code hooks by delegating to `claude_hud_amoled/pc/install.ps1` — the hook scripts
+are unchanged because this host serves the same `POST /status` and `POST /event` on the same port — then
+starts the host and optionally registers it to start at logon. Restart Claude Code afterwards.
+
+`pwsh -File uninstall.ps1` reverses it (`-KeepHooks` leaves `settings.json` alone).
+
+To run it by hand instead:
+
+```powershell
+pwsh -File start_host.ps1             # build (Release) + run in this console
+pwsh -File start_host.ps1 -Background # detached, log in ~/.claude/hud/chat_host.log
+```
+
+Either way, open <http://127.0.0.1:8765/> — status, pairing, provider selection, text and voice tests, live log.
 
 ## Pairing the device
 
@@ -89,15 +99,25 @@ language auto-detect on the small model sometimes mis-hears synthetic English as
 | POST | `/api/voice-chat?lang=ko&toDevice=1` (body `audio/wav`) | STT → chat → reply |
 | POST | `/api/stt/preload` | load the Whisper model now |
 | GET | `/api/selftest/adpcm` | codec round trip (reference for the firmware encoder) |
+| POST | `/api/device/talk?ms=5000` | make the device record from its own mic and run the pipeline |
+| POST | `/api/device/text` `{line}` | make the device send a prompt as if typed on it |
+| POST | `/api/device/clear` | clear the device screen |
 | POST | `/status` · `/event` | HUD passthrough, identical to `ble_bridge.py` |
 | GET | `/health` | `{ble, sent, dropped, device}` (old contract) |
+
+The three `/api/device/*` routes drive the on-screen app remotely, which is how the voice path gets tested
+without a hand on the device.
 
 Verified 2026-09-13: `netclaw` en/ko answers (~3 s), Whisper small Korean transcript exact, voice-chat round
 trip (STT 3–7 s + netclaw 3–20 s), ADPCM self-test 4:1 / 32.7 dB SNR.
 
-## Next: firmware
+## Things that bite
 
-`claude_hud_amoled` needs a `brookesia_app_chat` app: chat bubble UI, hold-to-talk button, mic capture via
-`bsp_audio_codec_microphone_init()` (16 kHz mono), IMA ADPCM blocks streamed as `0xA5` notifications, and
-rendering of the `A` stages. The BLE layer (`hud_ble.cpp`) only needs a `notify(bytes)` helper and a hook so
-`R`/`A` lines reach the chat app instead of the HUD state.
+- **BLE has one owner.** `ble_bridge.py` and this host cannot both run. `install.ps1` stops the bridge.
+- **Lines go out as raw UTF-8**, not `\uXXXX`. The default .NET encoder doubles a Korean payload, which
+  pushes one reply line past a single BLE write; `ConversationService.LineJson` uses relaxed escaping.
+- **The Korean LVGL font must be built uncompressed.** LVGL keeps the RLE reader for compressed glyphs in one
+  global while the firmware renders with two draw units, so concurrent decompression scrambles most glyphs on
+  screen. `claude_hud_amoled/tools/gen_font.py` passes `--no-compress` for that reason.
+- **Whisper language auto-detect** on the `small` model sometimes reads synthetic English as Korean
+  phonetics. Set `Stt:Language`, or send `lang` from the device, when the language is known.

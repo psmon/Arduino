@@ -13,6 +13,10 @@ Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one
 
 1. **Text line** — `<TAG> <json>\n`. Tag is one ASCII letter. Lines may be split across several BLE
    packets; the receiver buffers until `\n`. The host never emits a line longer than `Ble:MaxLineBytes` (480).
+   JSON is written as **raw UTF-8**, never `\uXXXX` — escaping doubles a Korean payload and splits a line
+   that would otherwise fit one write. A receiver may also accept a line that arrives without the trailing
+   newline, but only after checking the braces actually balance: "ends with `}`" alone accepts a line
+   truncated mid-value whenever a long line is split across writes.
 2. **Binary audio frame** — `0xA5 | id(1) | seq(2, little-endian) | payload`. One frame = exactly one notification.
    `0xA5` cannot collide with a text line because every text tag is ASCII.
 
@@ -22,8 +26,12 @@ Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one
 |---|---|---|
 | `S` | HUD status (unchanged, from Claude Code statusLine) | as before |
 | `E` | HUD event (unchanged, from Claude Code hooks) | as before |
-| `H` | host hello, sent on connect and in reply to a device hello | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"v":1}` |
+| `H` | host hello, sent once when the link comes up | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"v":1}` |
 | `A` | answer / progress for request `id` | see stages below |
+| `C` | remote control of the on-screen app (test aid) | `{"cmd":"talk","ms":5000}` · `{"cmd":"text","text":"..."}` · `{"cmd":"clear"}` |
+
+The greeting is one round trip and one direction only: host sends `H` on connect, the device answers `R hello`,
+and the host does **not** answer that with another `H`. Replying to the reply ping-pongs forever.
 
 `A` stages (`st`):
 
@@ -45,7 +53,7 @@ All device lines use tag `R`:
 
 | `t` | JSON | notes |
 |---|---|---|
-| `hello` | `{"t":"hello","name":"claude-hud","fw":"1.0"}` | optional; host answers with `H` |
+| `hello` | `{"t":"hello","name":"claude-hud","fw":"chat-1","fmt":"adpcm"}` | sent in reply to `H`; the host records it and stays quiet |
 | `ping` | `{"t":"ping","id":n}` | host answers `A {"id":n,"st":"pong"}` |
 | `text` | `{"t":"text","id":n,"text":"...","lang":"ko"}` | typed / preset prompt; `lang` optional |
 | `voice` | `{"t":"voice","id":n,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko"}` | begin an utterance; then send audio frames with this `id` |

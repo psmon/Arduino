@@ -208,7 +208,8 @@ app.MapPost("/api/device/text", async (LineRequest req, BleLink link) =>
 {
     if (string.IsNullOrWhiteSpace(req.Line)) return Results.BadRequest(new { error = "line = the prompt text" });
     var js = new JsonObject { ["cmd"] = "text", ["text"] = req.Line };
-    var ok = await link.SendLineAsync("C " + js.ToJsonString());
+    var ok = await link.SendLineAsync("C " + js.ToJsonString(
+        new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
     return ok ? Results.Json(new { ok = true }) : Results.Json(new { ok = false, error = "BLE not connected" }, statusCode: 503);
 });
 

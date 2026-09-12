@@ -19,6 +19,12 @@ Waveshare **ESP32-S3-Touch-AMOLED-1.75C**(466×466 원형 AMOLED, ESP32-S3R8, 32
 - 알루미늄 케이스라 BLE 거리는 실측 필요.
 
 ## PC 연동 (`pc/`, 이 기기 전용)
+
+> **권장 경로는 `../amoled_chat_host` 로 옮겨졌다.** 그쪽 ChatHost(ASP.NET)가 같은 포트(8765)에 같은
+> 엔드포인트를 제공하면서 음성 챗까지 처리한다. BLE 는 프로세스 하나만 잡을 수 있으므로 **둘을 같이
+> 띄우면 안 된다**. `amoled_chat_host/install.ps1` 은 아래 훅 배선을 그대로 재사용하고 파이썬 브리지만
+> 내린다. 아래 `pc/` 경로는 음성 기능이 필요 없을 때 쓰는 가벼운 대안으로 남겨 둔다.
+
 ```
 Claude Code hooks/statusLine ─(localhost HTTP)─► ble_bridge.py ─(BLE, 상시 연결)─► 기기
 ```
