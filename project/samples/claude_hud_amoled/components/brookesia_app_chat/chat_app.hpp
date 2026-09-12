@@ -26,22 +26,25 @@ private:
     static void timerCb(lv_timer_t *t);
     static void micEvent(lv_event_t *e);
     static void textEvent(lv_event_t *e);
-    static void clearEvent(lv_event_t *e);
+    static void stopEvent(lv_event_t *e);
+    static void modeEvent(lv_event_t *e);
 
     lv_timer_t *_timer = nullptr;
     uint32_t    _seen = 0;
     size_t      _lastReplyLen = 0;
 
     lv_obj_t *_lblHost = nullptr;
+    lv_obj_t *_btnMode = nullptr;
+    lv_obj_t *_lblMode = nullptr;
     lv_obj_t *_box = nullptr;
     lv_obj_t *_lblUser = nullptr;
     lv_obj_t *_lblAi = nullptr;
     lv_obj_t *_lblStage = nullptr;
     lv_obj_t *_btnMic = nullptr;
-    lv_obj_t *_lblMic = nullptr;
+    lv_obj_t *_imgMic = nullptr;
     lv_obj_t *_bar = nullptr;
     lv_obj_t *_btnText = nullptr;
-    lv_obj_t *_btnClear = nullptr;
+    lv_obj_t *_btnStop = nullptr;
 
     static VoiceChat *_instance;
 };

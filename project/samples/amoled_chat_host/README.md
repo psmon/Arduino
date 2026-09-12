@@ -101,7 +101,11 @@ language auto-detect on the small model sometimes mis-hears synthetic English as
 | GET | `/api/selftest/adpcm` | codec round trip (reference for the firmware encoder) |
 | POST | `/api/device/talk?ms=5000` | make the device record from its own mic and run the pipeline |
 | POST | `/api/device/text` `{line}` | make the device send a prompt as if typed on it |
+| POST | `/api/device/mode?voice=true` | flip the device's answer mode (text, or text plus speech) |
+| POST | `/api/device/speak` `{line}` | synthesise text and play it on the device speaker |
+| POST | `/api/device/stop` | cancel whatever is running |
 | POST | `/api/device/clear` | clear the device screen |
+| POST | `/api/session/reset` | abandon the CLI conversation and start a fresh session id |
 | POST | `/status` · `/event` | HUD passthrough, identical to `ble_bridge.py` |
 | GET | `/health` | `{ble, sent, dropped, device}` (old contract) |
 
@@ -110,6 +114,24 @@ without a hand on the device.
 
 Verified 2026-09-13: `netclaw` en/ko answers (~3 s), Whisper small Korean transcript exact, voice-chat round
 trip (STT 3–7 s + netclaw 3–20 s), ADPCM self-test 4:1 / 32.7 dB SNR.
+
+## Spoken answers
+
+With the device's answer mode set to text plus voice, the host synthesises the reply with Windows SAPI at
+16 kHz mono, encodes it as IMA ADPCM and streams it as `0xA6` frames. The device buffers the whole utterance
+in PSRAM and plays it through the speaker when the host says it is done — BLE delivers about 8 kB/s while the
+speaker consumes 32 kB/s, so playing as it arrives would stutter. Measured: 9.5 s of Korean speech is 158
+frames and lands in 677 ms.
+
+The setting lives on the device (persisted in NVS) and rides along on each request as `"tts": true|false`.
+The host reports whether it has any voice installed in its greeting, and the device hides the setting when
+it does not. `POST /api/device/mode?voice=true` flips it remotely, and `POST /api/device/speak` plays
+arbitrary text without involving a chat CLI.
+
+## One request at a time, newest wins
+
+A second question preempts the first instead of being refused, so the device no longer shows "host busy".
+See PROTOCOL.md for why the abandoned CLI child is left to die on its own rather than killed.
 
 ## Things that bite
 

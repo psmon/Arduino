@@ -95,6 +95,14 @@
     <input type="text" id="devText" value="오늘 서울 날씨 한 문장으로 알려줘">
     <button class="ghost" id="btnDevText">Send as device prompt</button>
   </div>
+  <div class="row">
+    <label><input type="checkbox" id="devVoice"> 답변을 기기 스피커로도 (answer mode)</label>
+    <button class="ghost" id="btnDevStop">Stop</button>
+  </div>
+  <div class="row">
+    <input type="text" id="devSay" value="아몰레드 기기 스피커 테스트입니다.">
+    <button class="ghost" id="btnDevSay">Speak on device</button>
+  </div>
   <div class="out" id="devOut">기기 화면에 결과가 표시됩니다.</div>
 </section>
 
@@ -218,6 +226,18 @@ $('#btnDevText').onclick = async () => {
   loadLog();
 };
 $('#btnDevClear').onclick = async () => { await post('/api/device/clear'); $('#devOut').textContent = '기기 화면 초기화'; };
+$('#devVoice').onchange = async () => {
+  const r = await post('/api/device/mode?voice=' + $('#devVoice').checked);
+  $('#devOut').textContent = r.error ? 'ERROR: ' + r.error
+    : ($('#devVoice').checked ? '답변 모드: 텍스트+음성' : '답변 모드: 텍스트');
+};
+$('#btnDevStop').onclick = async () => { const r = await post('/api/device/stop'); $('#devOut').textContent = r.cancelled ? '진행 중이던 요청을 중단했습니다.' : '중단할 요청이 없습니다.'; };
+$('#btnDevSay').onclick = async () => {
+  $('#devOut').textContent = '합성 후 기기로 전송 중…';
+  const r = await post('/api/device/speak', { line: $('#devSay').value });
+  $('#devOut').textContent = r.error ? 'ERROR: ' + r.error : '기기 스피커로 재생했습니다.';
+  loadLog();
+};
 
 refresh(); loadProviders(); loadLog();
 setInterval(refresh, 2000); setInterval(loadLog, 5000);

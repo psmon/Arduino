@@ -12,6 +12,8 @@
 #include "freertos/queue.h"
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "hud_transport.hpp"
 
 static const char *TAG = "chat_core";
@@ -23,6 +25,10 @@ using namespace claude_hud;
 static constexpr int      SAMPLE_RATE = 16000;
 static constexpr size_t   MAX_SAMPLES_PER_BLOCK = 960;      // 60 ms
 static constexpr uint32_t HARD_MAX_MS = 60000;
+// Answer audio is buffered whole before playback: BLE delivers ~8 kB/s of ADPCM while the speaker
+// eats 32 kB/s of PCM, so playing as it arrives would stutter. 40 s of PCM16 = 1.28 MB, in PSRAM.
+static constexpr size_t   SPK_MAX_BYTES = 40 * SAMPLE_RATE * 2;
+static constexpr const char *NVS_NS = "chat";
 
 static inline uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -59,10 +65,36 @@ static size_t adpcmEncodeBlock(const int16_t *s, size_t n, AdpcmState &st, uint8
     return 4 + (n + 1) / 2;
 }
 
+// Decode one self-contained IMA ADPCM block into PCM16. Mirror of adpcmEncodeBlock / the host's
+// ImaAdpcm.DecodeBlock; each block carries its own predictor so a lost frame costs one block only.
+static size_t adpcmDecodeBlock(const uint8_t *blk, size_t n, uint8_t *out, size_t outCap)
+{
+    if (n < 4) return 0;
+    int predictor = (int16_t)(blk[0] | (blk[1] << 8));
+    int index = blk[2] > 88 ? 88 : blk[2];
+    size_t w = 0;
+    auto step = [&](int nib) {
+        int st = STEP_TAB[index];
+        int diff = st >> 3;
+        if (nib & 1) diff += st >> 2;
+        if (nib & 2) diff += st >> 1;
+        if (nib & 4) diff += st;
+        int p = (nib & 8) ? predictor - diff : predictor + diff;
+        predictor = p < -32768 ? -32768 : (p > 32767 ? 32767 : p);
+        int idx = index + IDX_TAB[nib];
+        index = idx < 0 ? 0 : (idx > 88 ? 88 : idx);
+        if (w + 2 <= outCap) { out[w] = (uint8_t)predictor; out[w + 1] = (uint8_t)(predictor >> 8); w += 2; }
+    };
+    for (size_t i = 4; i < n; i++) { step(blk[i] & 0x0F); step(blk[i] >> 4); }
+    return w;
+}
+
 // ---------------------------------------------------------------- singleton / hooks
 Core &Core::instance() { static Core c; return c; }
 
 static bool lineHookTrampoline(const char *line, size_t len) { return Core::instance().onLine(line, len); }
+static bool frameHookTrampoline(const uint8_t *d, size_t n) { return Core::instance().onFrame(d, n); }
+static void playTaskTrampoline(void *) { Core::instance().playTask(); }
 static void captureTaskTrampoline(void *) { Core::instance().captureTask(); }
 static void txTaskTrampoline(void *) { Core::instance().txTask(); }
 
@@ -73,6 +105,15 @@ void Core::init()
 {
     if (task_) return;
     setLineHook(lineHookTrampoline);
+    setFrameHook(frameHookTrampoline);
+
+    // answer-mode setting survives a reboot
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t v = 0;
+        if (nvs_get_u8(nvs, "mode", &v) == ESP_OK) s_.mode = (v == 1) ? AnswerMode::TextAndVoice : AnswerMode::TextOnly;
+        nvs_close(nvs);
+    }
     // The tx task exists so a reply to an inbound line never calls into NimBLE from inside its own
     // GATT-write callback (the host lock is held there; notifying from it can deadlock).
     txQueue_ = xQueueCreate(4, sizeof(TxMsg));
@@ -83,7 +124,11 @@ void Core::init()
     TaskHandle_t h = nullptr;
     xTaskCreatePinnedToCore(captureTaskTrampoline, "chat_mic", 6144, nullptr, 5, &h, 1);
     task_ = h;
-    ESP_LOGI(TAG, "init: line hook set, capture + tx tasks started");
+    TaskHandle_t pl = nullptr;
+    xTaskCreatePinnedToCore(playTaskTrampoline, "chat_spk", 4096, nullptr, 5, &pl, 1);
+    playTask_ = pl;
+    ESP_LOGI(TAG, "init: hooks set, capture + tx + play tasks started (answer mode %s)",
+             s_.mode == AnswerMode::TextAndVoice ? "text+voice" : "text");
 }
 
 void Core::txTask()
@@ -141,6 +186,48 @@ void Core::snapshot(Snapshot &out)
 }
 
 uint32_t Core::version() { std::lock_guard<std::mutex> g(m_); return ver_; }
+
+AnswerMode Core::mode()
+{
+    std::lock_guard<std::mutex> g(m_);
+    return s_.mode;
+}
+
+void Core::setMode(AnswerMode m)
+{
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (s_.mode == m) return;
+        s_.mode = m;
+        bump();
+    }
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_u8(nvs, "mode", (uint8_t)m);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGI(TAG, "answer mode -> %s", m == AnswerMode::TextAndVoice ? "text+voice" : "text");
+    if (m == AnswerMode::TextOnly) playAbort_ = true;
+}
+
+// Stop everything that is in flight: recording, the host request and any answer playback.
+void Core::cancel()
+{
+    int id;
+    { std::lock_guard<std::mutex> g(m_); id = s_.reqId; }
+    bool wasRecording = recording_;
+    recording_ = false;
+    playAbort_ = true;
+    playReady_ = false;
+    { std::lock_guard<std::mutex> g(m_); spkLen_ = 0; spkId_ = -1; s_.speakGot = s_.speakWant = 0; }
+
+    char js[48];
+    snprintf(js, sizeof(js), "{\"t\":\"cancel\",\"id\":%d}", id);
+    queueLine(js);
+    { std::lock_guard<std::mutex> g(m_); s_.stage = Stage::Idle; s_.error[0] = 0; bump(); }
+    ESP_LOGI(TAG, "cancel #%d (was %s)", id, wasRecording ? "recording" : "waiting");
+}
 
 void Core::clear()
 {
@@ -201,6 +288,7 @@ bool Core::sendText(const char *text)
     cJSON_AddStringToObject(js, "t", "text");
     cJSON_AddNumberToObject(js, "id", id);
     cJSON_AddStringToObject(js, "text", text);
+    cJSON_AddBoolToObject(js, "tts", mode() == AnswerMode::TextAndVoice);
     char *out = cJSON_PrintUnformatted(js);
     bool ok = out && queueLine(out);
     cJSON_free(out); cJSON_Delete(js);
@@ -224,6 +312,8 @@ bool Core::onLine(const char *line, size_t len)
             std::lock_guard<std::mutex> g(m_);
             snprintf(s_.host, sizeof(s_.host), "%s", cJSON_IsString(h) ? h->valuestring : "?");
             snprintf(s_.provider, sizeof(s_.provider), "%s", cJSON_IsString(p) ? p->valuestring : "?");
+            s_.hostTts = cJSON_IsTrue(cJSON_GetObjectItem(js, "tts"));
+            if (!s_.hostTts) s_.mode = AnswerMode::TextOnly;   // no voice on the host: hide the option
             s_.hostOnline = true;
             bump();
         }
@@ -260,6 +350,25 @@ bool Core::onLine(const char *line, size_t len)
             s_.stage = Stage::Error;
             snprintf(s_.error, sizeof(s_.error), "%s", text ? text : "error");
             recording_ = false;
+        } else if (!strcmp(stage, "speak")) {
+            const cJSON *ms = cJSON_GetObjectItem(js, "ms");
+            const cJSON *fr = cJSON_GetObjectItem(js, "frames");
+            s_.speakMs = cJSON_IsNumber(ms) ? (uint32_t)ms->valueint : 0;
+            s_.speakWant = cJSON_IsNumber(fr) ? (uint32_t)fr->valueint : 0;
+            s_.speakGot = 0;
+            s_.stage = Stage::Speaking;
+            spkLen_ = 0; spkId_ = rid; spkLastSeq_ = -1;
+            playReady_ = false; playAbort_ = false;
+            ESP_LOGI(TAG, "answer audio #%d: %lu ms in %lu frames", rid,
+                     (unsigned long)s_.speakMs, (unsigned long)s_.speakWant);
+        } else if (!strcmp(stage, "speak_end")) {
+            if (text) ESP_LOGW(TAG, "speech: %s", text);
+            ESP_LOGI(TAG, "answer audio #%d complete: %u frames, %u bytes pcm",
+                     rid, (unsigned)s_.speakGot, (unsigned)spkLen_);
+            playReady_ = spkLen_ > 0;
+            if (!playReady_) s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
+        } else if (!strcmp(stage, "idle")) {
+            s_.stage = Stage::Idle;
         } else if (!strcmp(stage, "busy")) {
             s_.stage = Stage::Busy;
             recording_ = false;
@@ -280,6 +389,9 @@ bool Core::onLine(const char *line, size_t len)
             ok = cJSON_IsString(tx) && sendText(tx->valuestring);
         } else if (!strcmp(c, "clear")) {
             clear();
+        } else if (!strcmp(c, "mode")) {
+            const cJSON *v = cJSON_GetObjectItem(js, "voice");
+            setMode(cJSON_IsTrue(v) ? AnswerMode::TextAndVoice : AnswerMode::TextOnly);
         } else ok = false;
     } else ok = false;
 
@@ -308,7 +420,8 @@ void Core::captureTask()
 
         // header line first; then frames; stop when released, too long, disconnected or the host says busy/err
         char hdr[96];
-        snprintf(hdr, sizeof(hdr), "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1}", id, SAMPLE_RATE);
+        snprintf(hdr, sizeof(hdr), "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1,\"tts\":%s}",
+                 id, SAMPLE_RATE, mode() == AnswerMode::TextAndVoice ? "true" : "false");
         if (!sendLine(hdr)) { recording_ = false; setStage(Stage::Error, "BLE send failed"); continue; }
 
         AdpcmState st;
@@ -361,6 +474,79 @@ void Core::captureTask()
             s_.level = 0;
             if (s_.stage == Stage::Recording) s_.stage = ok ? Stage::Sending : Stage::Error;
             if (!ok) snprintf(s_.error, sizeof(s_.error), "BLE send failed");
+            bump();
+        }
+    }
+}
+
+// ---------------------------------------------------------------- answer audio (NimBLE host task)
+bool Core::onFrame(const uint8_t *data, size_t len)
+{
+    if (len < 4 || data[0] != 0xA6) return false;
+    int id = data[1];
+    int seq = data[2] | (data[3] << 8);
+
+    std::lock_guard<std::mutex> g(m_);
+    if (spkId_ != id || playAbort_) return false;              // stale or cancelled utterance
+
+    if (!spkBuf_) {
+        spkBuf_ = (uint8_t *)heap_caps_malloc(SPK_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        spkCap_ = spkBuf_ ? SPK_MAX_BYTES : 0;
+        if (!spkBuf_) { ESP_LOGE(TAG, "no PSRAM for answer audio"); return false; }
+    }
+    if (spkLastSeq_ >= 0 && seq != ((spkLastSeq_ + 1) & 0xFFFF))
+        ESP_LOGW(TAG, "answer audio gap at seq %d (expected %d)", seq, (spkLastSeq_ + 1) & 0xFFFF);
+    spkLastSeq_ = seq;
+
+    size_t w = adpcmDecodeBlock(data + 4, len - 4, spkBuf_ + spkLen_, spkCap_ - spkLen_);
+    spkLen_ += w;
+    s_.speakGot++;
+    if ((s_.speakGot & 7) == 0) bump();
+    return true;
+}
+
+void Core::playTask()
+{
+    for (;;) {
+        if (!playReady_) { vTaskDelay(pdMS_TO_TICKS(30)); continue; }
+        playReady_ = false;
+
+        size_t len;
+        { std::lock_guard<std::mutex> g(m_); len = spkLen_; }
+        if (len == 0 || playAbort_) { playAbort_ = false; continue; }
+
+        if (!spk_) {
+            esp_codec_dev_handle_t h = bsp_audio_codec_speaker_init();
+            if (!h) {
+                ESP_LOGW(TAG, "speaker init failed - answer stays text only");
+                std::lock_guard<std::mutex> g(m_);
+                s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
+                bump();
+                continue;
+            }
+            esp_codec_dev_set_out_vol(h, 80.0f);
+            esp_codec_dev_sample_info_t fs = {};
+            fs.sample_rate = SAMPLE_RATE;
+            fs.channel = 1;
+            fs.bits_per_sample = 16;
+            int rc = esp_codec_dev_open(h, &fs);
+            if (rc != ESP_CODEC_DEV_OK) { ESP_LOGW(TAG, "speaker open rc=%d", rc); continue; }
+            spk_ = h;
+            ESP_LOGI(TAG, "speaker ready: %d Hz mono 16-bit", SAMPLE_RATE);
+        }
+
+        ESP_LOGI(TAG, "playing %u ms of answer audio", (unsigned)(len / (SAMPLE_RATE * 2 / 1000)));
+        const size_t CHUNK = 2048;
+        for (size_t off = 0; off < len && !playAbort_; off += CHUNK) {
+            size_t n = len - off < CHUNK ? len - off : CHUNK;
+            // esp_codec_dev_write blocks until the I2S DMA has room, which paces playback for us.
+            if (esp_codec_dev_write(spk_, spkBuf_ + off, (int)n) != ESP_CODEC_DEV_OK) break;
+        }
+        playAbort_ = false;
+        {
+            std::lock_guard<std::mutex> g(m_);
+            spkLen_ = 0;
+            s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
             bump();
         }
     }

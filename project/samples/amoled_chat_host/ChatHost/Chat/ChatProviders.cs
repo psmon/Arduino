@@ -24,7 +24,23 @@ public sealed class CliChatProvider(string name, CliProviderOptions o, ILogger l
     public string Name => name;
     public string? Description => o.Description;
 
+    // Only one child of this provider may run at a time. A chat CLI keeps per-session server state and
+    // per-session files - netclaw holds an exclusive lock on ~/.netclaw/logs/<session>.log - so two
+    // overlapping prompts on one session make the second fail instantly. Preemption therefore means
+    // "abandon the answer", not "run both": the next request waits here until the old child is gone.
+    private readonly SemaphoreSlim _slot = new(1, 1);
+    private const int DetachGraceSec = 12;
+
     public async Task<ChatResult> AskAsync(string prompt, string? session, CancellationToken ct = default)
+    {
+        await _slot.WaitAsync(ct);
+        bool release = true;
+        try { return await RunOnceAsync(prompt, session, () => release = false, ct); }
+        finally { if (release) _slot.Release(); }
+    }
+
+    /// <param name="onDetach">Called when the child is abandoned: its reaper takes over the slot.</param>
+    private async Task<ChatResult> RunOnceAsync(string prompt, string? session, Action onDetach, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         var psi = new ProcessStartInfo
@@ -50,35 +66,74 @@ public sealed class CliChatProvider(string name, CliProviderOptions o, ILogger l
         log.LogInformation("[{Name}] run: {Cmd} {Args}", name, o.Command,
             string.Join(' ', psi.ArgumentList.Select(a => a.Length > 60 ? a[..57] + "..." : a)));
 
-        using var p = new Process { StartInfo = psi };
+        var p = new Process { StartInfo = psi };
+        bool detached = false;
         try { p.Start(); }
         catch (Exception ex)
         {
+            p.Dispose();
             throw new InvalidOperationException($"cannot start '{o.Command}': {ex.Message}");
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(5, o.TimeoutSec)));
 
-        var stdoutTask = p.StandardOutput.ReadToEndAsync(timeout.Token);
-        var stderrTask = p.StandardError.ReadToEndAsync(timeout.Token);
-        if (psi.RedirectStandardInput)
+        // Deliberately untokenised: if we abandon this child we still have to drain its pipes, or it
+        // blocks on a full buffer and never exits.
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
+        string stdout, stderr;
+        int exitCode;                     // read before the finally disposes the Process
+        try
         {
-            await p.StandardInput.WriteAsync(prompt);
-            p.StandardInput.Close();
+            if (psi.RedirectStandardInput)
+            {
+                await p.StandardInput.WriteAsync(prompt);
+                p.StandardInput.Close();
+            }
+            try { await p.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Preempted by a newer question. Let this one finish on its own and throw away the
+                // answer: killing it mid-flight wedges the CLI's server-side session (netclaw leaves the
+                // daemon hub connection half-open and every later prompt on that session id fails).
+                detached = true;
+                onDetach();                             // the reaper below owns the slot from here on
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var grace = new CancellationTokenSource(TimeSpan.FromSeconds(DetachGraceSec));
+                        try { await p.WaitForExitAsync(grace.Token); }
+                        catch (OperationCanceledException)
+                        {
+                            log.LogWarning("[{Name}] abandoned child still running after {Sec}s - killing it; "
+                                         + "its session may need rotating", name, DetachGraceSec);
+                            try { p.Kill(entireProcessTree: true); } catch { }
+                            try { await p.WaitForExitAsync(); } catch { }
+                        }
+                        await stdoutTask; await stderrTask;
+                    }
+                    catch { }
+                    finally { p.Dispose(); _slot.Release(); }
+                });
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                // A genuinely stuck child has to be killed even though it may cost us the session.
+                try { p.Kill(entireProcessTree: true); } catch { }
+                throw new TimeoutException($"{name} did not answer within {o.TimeoutSec}s");
+            }
+            stdout = await stdoutTask;
+            stderr = await stderrTask;
+            exitCode = p.ExitCode;
         }
-        try { await p.WaitForExitAsync(timeout.Token); }
-        catch (OperationCanceledException)
-        {
-            try { p.Kill(entireProcessTree: true); } catch { }
-            throw new TimeoutException($"{name} did not answer within {o.TimeoutSec}s");
-        }
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
+        finally { if (!detached) p.Dispose(); }
         sw.Stop();
 
-        if (p.ExitCode != 0)
-            log.LogWarning("[{Name}] exit {Code}: {Err}", name, p.ExitCode, Trim(stderr, 300));
+        if (exitCode != 0)
+            log.LogWarning("[{Name}] exit {Code}: {Err}", name, exitCode, Trim(stderr, 300));
 
         string answer;
         if (o.Output.Equals("json", StringComparison.OrdinalIgnoreCase))
@@ -89,8 +144,8 @@ public sealed class CliChatProvider(string name, CliProviderOptions o, ILogger l
         else
         {
             answer = stdout.Trim();
-            if (answer.Length == 0 && p.ExitCode != 0)
-                throw new InvalidOperationException($"{name} failed (exit {p.ExitCode}): {Trim(stderr, 200)}");
+            if (answer.Length == 0 && exitCode != 0)
+                throw new InvalidOperationException($"{name} failed (exit {exitCode}): {Trim(stderr, 200)}");
         }
         return new ChatResult(name, answer, sw.ElapsedMilliseconds, Trim(stdout, 2000));
     }

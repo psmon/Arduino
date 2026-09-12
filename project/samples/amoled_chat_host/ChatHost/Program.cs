@@ -30,6 +30,7 @@ builder.Services.AddSingleton<PairingStore>();
 builder.Services.AddSingleton<BleLink>();
 builder.Services.AddSingleton<ChatProviderRegistry>();
 builder.Services.AddSingleton<WhisperLocalStt>();
+builder.Services.AddSingleton<WindowsTts>();
 builder.Services.AddSingleton<ISpeechToText>(sp => sp.GetRequiredService<WhisperLocalStt>());
 builder.Services.AddSingleton<ConversationService>();
 builder.Services.AddHostedService<BleConnectionWorker>();
@@ -51,7 +52,7 @@ app.MapGet("/health", (BleLink link) => Results.Json(new
     ble = link.IsConnected, sent = link.Sent, dropped = link.Dropped, device = link.DeviceName,
 }));
 
-app.MapGet("/api/status", (BleLink link, PairingStore store, ChatProviderRegistry chat, WhisperLocalStt stt, ConversationService conv) =>
+app.MapGet("/api/status", (BleLink link, PairingStore store, ChatProviderRegistry chat, WhisperLocalStt stt, WindowsTts tts, ConversationService conv) =>
     Results.Json(new
     {
         host = Environment.MachineName,
@@ -66,7 +67,9 @@ app.MapGet("/api/status", (BleLink link, PairingStore store, ChatProviderRegistr
         stateFile = store.FilePath,
         chat = new { provider = chat.DefaultName, providers = chat.All.Select(p => p.Name) },
         stt = new { provider = stt.ProviderName, ready = stt.IsReady, status = stt.Status, modelPath = stt.ModelPath, downloaded = stt.IsModelDownloaded() },
-        conversation = new { busy = conv.IsBusy, handled = conv.Handled, errors = conv.Errors, capture = conv.CaptureState,
+        tts = new { available = tts.Available, voices = tts.Voices },
+        conversation = new { busy = conv.IsBusy, busyId = conv.BusyId, handled = conv.Handled, errors = conv.Errors,
+                             preempted = conv.Preempted, session = conv.DeviceSession, capture = conv.CaptureState,
                              lastTranscript = conv.LastTranscript, lastReply = conv.LastReply, device = conv.LastDeviceInfo },
     }, jsonOpt));
 
@@ -212,6 +215,33 @@ app.MapPost("/api/device/text", async (LineRequest req, BleLink link) =>
         new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
     return ok ? Results.Json(new { ok = true }) : Results.Json(new { ok = false, error = "BLE not connected" }, statusCode: 503);
 });
+
+// Speak arbitrary text on the device speaker (no chat CLI involved).
+app.MapPost("/api/device/speak", async (LineRequest req, ConversationService conv, HttpRequest http, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Line)) return Results.BadRequest(new { error = "line = the text to speak" });
+    try { await conv.SpeakAsync(req.Line, http.Query["lang"], ct); return Results.Json(new { ok = true }); }
+    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
+});
+
+// Flip the device's answer mode remotely (same setting as the pill on its screen).
+app.MapPost("/api/device/mode", async (BleLink link, bool? voice) =>
+{
+    var ok = await link.SendLineAsync($"C {{\"cmd\":\"mode\",\"voice\":{((voice ?? false) ? "true" : "false")}}}");
+    return ok ? Results.Json(new { ok = true, voice = voice ?? false })
+              : Results.Json(new { ok = false, error = "BLE not connected" }, statusCode: 503);
+});
+
+// Abandon the current CLI conversation and start a fresh one (loses that session's history).
+app.MapPost("/api/session/reset", (ConversationService conv) =>
+{
+    conv.RotateSession();
+    return Results.Json(new { session = conv.DeviceSession });
+});
+
+// Stop whatever the host is doing for the device right now.
+app.MapPost("/api/device/stop", (ConversationService conv) =>
+    Results.Json(new { cancelled = conv.CancelCurrent("stopped from the host") }));
 
 app.MapPost("/api/device/clear", async (BleLink link) =>
     Results.Json(new { ok = await link.SendLineAsync("C {\"cmd\":\"clear\"}") }));

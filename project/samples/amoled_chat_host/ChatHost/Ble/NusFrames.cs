@@ -10,9 +10,21 @@ namespace ChatHost.Ble;
 /// </summary>
 public static class NusFrames
 {
+    /// <summary>device -> host microphone frame.</summary>
     public const byte AudioMagic = 0xA5;
+    /// <summary>host -> device speech frame (same header shape, opposite direction).</summary>
+    public const byte SpeechMagic = 0xA6;
 
     public static bool IsAudioFrame(ReadOnlySpan<byte> pkt) => pkt.Length >= 4 && pkt[0] == AudioMagic;
+
+    /// <summary>Build one speech frame: 0xA6 | id | seq(LE16) | payload.</summary>
+    public static byte[] SpeechFrame(int id, int seq, ReadOnlySpan<byte> payload)
+    {
+        var f = new byte[4 + payload.Length];
+        f[0] = SpeechMagic; f[1] = (byte)id; f[2] = (byte)seq; f[3] = (byte)(seq >> 8);
+        payload.CopyTo(f.AsSpan(4));
+        return f;
+    }
 
     public static (int id, int seq, ReadOnlyMemory<byte> payload) ParseAudio(byte[] pkt)
         => (pkt[1], pkt[2] | (pkt[3] << 8), new ReadOnlyMemory<byte>(pkt, 4, pkt.Length - 4));

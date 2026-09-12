@@ -43,6 +43,10 @@ static uint16_t    s_mtu = 23;
 static bool        s_txSubscribed = false;
 static bool        s_started = false;
 static LineHook    s_lineHook = nullptr;
+static FrameHook   s_frameHook = nullptr;
+
+// First byte of a host->device binary write. Cannot collide with a text line: every tag is ASCII.
+static constexpr uint8_t SPEECH_MAGIC = 0xA6;
 
 static void setErr(const char *msg, int rc)
 {
@@ -110,6 +114,11 @@ static int rxAccess(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void 
     if (len > sizeof(buf)) len = sizeof(buf);
     uint16_t out = 0;
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, len, &out) != 0) return BLE_ATT_ERR_UNLIKELY;
+    if (out >= 4 && (uint8_t)buf[0] == SPEECH_MAGIC) {
+        // Binary speech frame, never text: hand it over whole and keep it out of the line buffer.
+        if (s_frameHook) s_frameHook((const uint8_t *)buf, out);
+        return 0;
+    }
     feed(buf, out);
     return 0;
 }
@@ -234,6 +243,7 @@ int  bleMaxPayload()
     return n < 20 ? 20 : n;
 }
 void setLineHook(LineHook hook) { s_lineHook = hook; }
+void setFrameHook(FrameHook hook) { s_frameHook = hook; }
 
 bool bleNotify(const uint8_t *data, size_t len)
 {

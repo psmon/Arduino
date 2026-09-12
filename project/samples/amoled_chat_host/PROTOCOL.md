@@ -17,8 +17,9 @@ Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one
    that would otherwise fit one write. A receiver may also accept a line that arrives without the trailing
    newline, but only after checking the braces actually balance: "ends with `}`" alone accepts a line
    truncated mid-value whenever a long line is split across writes.
-2. **Binary audio frame** — `0xA5 | id(1) | seq(2, little-endian) | payload`. One frame = exactly one notification.
-   `0xA5` cannot collide with a text line because every text tag is ASCII.
+2. **Binary audio frame** — `<magic> | id(1) | seq(2, little-endian) | payload`, one frame per packet.
+   `0xA5` is the microphone stream (device → host), `0xA6` the spoken answer (host → device). Neither can
+   collide with a text line because every text tag is ASCII.
 
 ## Host → device
 
@@ -41,8 +42,11 @@ and the host does **not** answer that with another `H`. Replying to the reply pi
 | `stt` | (no `text`) transcription started · (with `text`) transcription result | `text` |
 | `think` | prompt handed to the chat CLI | – |
 | `reply` | answer chunk; UTF-8 safe split, concatenate in `seq` order | `seq`, `n`, `text`, `done:true` on the last chunk |
+| `speak` | spoken answer follows as `0xA6` frames | `fmt`, `rate`, `ch`, `frames`, `ms` |
+| `speak_end` | all speech frames sent; the device plays what it buffered | `text` only on failure |
+| `idle` | nothing is running any more (answer to `cancel`) | – |
 | `err` | request failed / no speech / audio decode error | `text` |
-| `busy` | another request is still running — retry later | – |
+| `busy` | legacy; the host preempts instead of refusing, so this should not appear | – |
 | `pong` | reply to `ping` | – |
 
 `id` = the request id the device chose. Answers pushed from the host web UI use `id: 0`.
@@ -55,10 +59,14 @@ All device lines use tag `R`:
 |---|---|---|
 | `hello` | `{"t":"hello","name":"claude-hud","fw":"chat-1","fmt":"adpcm"}` | sent in reply to `H`; the host records it and stays quiet |
 | `ping` | `{"t":"ping","id":n}` | host answers `A {"id":n,"st":"pong"}` |
-| `text` | `{"t":"text","id":n,"text":"...","lang":"ko"}` | typed / preset prompt; `lang` optional |
-| `voice` | `{"t":"voice","id":n,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko"}` | begin an utterance; then send audio frames with this `id` |
+| `text` | `{"t":"text","id":n,"text":"...","lang":"ko","tts":false}` | typed / preset prompt; `lang` optional |
+| `voice` | `{"t":"voice","id":n,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false}` | begin an utterance; then send audio frames with this `id` |
 | `end` | `{"t":"end","id":n}` | utterance finished → host runs STT → chat → `A` stages |
-| `cancel` | `{"t":"cancel","id":n}` | drop the capture in progress |
+| `cancel` | `{"t":"cancel","id":n}` | drop the capture, the host request and any answer audio |
+
+`tts` is the device's answer-mode setting: `false` = text only, `true` = text plus a spoken answer. The host
+advertises whether it can speak at all in its `H` line (`"tts":true`); the device hides the setting when it
+cannot.
 
 `fmt`:
 - `pcm16` — raw 16-bit little-endian PCM in every frame payload.
@@ -69,6 +77,17 @@ All device lines use tag `R`:
 
 Recommended capture on the device: 16 kHz mono from `bsp_audio_codec_microphone_init()`, ADPCM blocks of
 480 samples (30 ms → 244-byte payload → fits one notification at MTU 247+; at MTU 512 use 960 samples/484 B).
+
+## One request at a time, newest wins
+
+A chat CLI keeps per-session state — netclaw holds an exclusive lock on `~/.netclaw/logs/<session>.log` —
+so two prompts cannot run on one session at once. Rather than refuse the second one, the host **preempts**:
+the older request is abandoned, its answer discarded, and only the newer one reaches the device. The
+abandoned CLI child is *not* killed (killing it wedges the session server-side); it is left to finish while
+the provider's slot stays held, and only killed if it overruns a 12 s grace. If a session does end up
+unusable, the host rotates to a fresh session id and the person just asks again.
+
+The practical consequence for the device: a second question always wins, and `busy` should never show.
 
 ## Bandwidth reality
 
@@ -91,4 +110,10 @@ device                      host
                               chat CLI (netclaw)   ◀── A {id:7,st:"think"}
                                                    ◀── A {id:7,st:"reply",seq:0,n:2,text:"…"}
                                                    ◀── A {id:7,st:"reply",seq:1,n:2,text:"…",done:true}
+   (answer mode = text+voice only)
+                              SAPI synthesis        ◀── A {id:7,st:"speak",frames:113,ms:6770}
+                                                   ◀── 0xA6 07 0000 …
+                                                   ◀── 0xA6 07 0001 …
+                              buffered in PSRAM     ◀── A {id:7,st:"speak_end"}
+   plays 6.8 s on the speaker
 ```

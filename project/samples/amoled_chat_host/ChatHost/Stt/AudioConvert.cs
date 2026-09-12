@@ -117,6 +117,23 @@ public static class ImaAdpcm
         outp.Write(two);
     }
 
+    /// <summary>Split 16-bit PCM into self-contained ADPCM blocks of `samplesPerBlock` samples each.</summary>
+    public static List<byte[]> EncodeBlocks(byte[] pcm16, int samplesPerBlock)
+    {
+        var shorts = new short[pcm16.Length / 2];
+        for (int i = 0; i < shorts.Length; i++) shorts[i] = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
+        var blocks = new List<byte[]>();
+        int pred = 0, idx = 0;
+        for (int off = 0; off < shorts.Length; off += samplesPerBlock)
+        {
+            int n = Math.Min(samplesPerBlock, shorts.Length - off);
+            if ((n & 1) == 1) n--;                       // blocks hold whole byte pairs
+            if (n <= 0) break;
+            blocks.Add(EncodeBlock(shorts.AsSpan(off, n), ref pred, ref idx));
+        }
+        return blocks;
+    }
+
     /// <summary>Encoder (used by the self-test endpoint and useful as the reference for the firmware side).</summary>
     public static byte[] EncodeBlock(ReadOnlySpan<short> samples, ref int predictor, ref int index)
     {

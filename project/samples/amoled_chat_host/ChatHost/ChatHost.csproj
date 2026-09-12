@@ -18,6 +18,8 @@
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
     <!-- WAV decode + resampling to 16 kHz mono for STT. -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Text to speech (Windows SAPI) for the optional spoken answer on the device speaker. -->
+    <PackageReference Include="System.Speech" Version="10.0.12" />
   </ItemGroup>
 
 </Project>

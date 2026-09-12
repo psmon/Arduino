@@ -14,26 +14,39 @@
 
 using namespace esp_brookesia::gui;
 using namespace esp_brookesia::systems;
+using voice_chat::AnswerMode;
 using voice_chat::Core;
 using voice_chat::Snapshot;
 using voice_chat::Stage;
 
 LV_IMG_DECLARE(esp_brookesia_app_icon_launcher_chat_112_112);
+LV_IMG_DECLARE(chat_icon_mic_48);        // tools/gen_mic_glyph.py — LVGL has no microphone symbol
 LV_FONT_DECLARE(font_nanum_18);          // shared with brookesia_app_claude_hud (Latin + Hangul)
 
 namespace esp_brookesia::apps {
 
-static const uint32_t C_BG    = 0x000000;
-static const uint32_t C_WHITE = 0xFFFFFF;
-static const uint32_t C_GRAY  = 0x8A8F98;
-static const uint32_t C_DIM   = 0x232733;
-static const uint32_t C_GREEN = 0x3DD68C;
-static const uint32_t C_BLUE  = 0x4C8DFF;
-static const uint32_t C_AMBER = 0xF5A524;
-static const uint32_t C_RED   = 0xFF5C5C;
-static const uint32_t C_CYAN  = 0x5CE1E6;
+static const uint32_t C_BG     = 0x000000;
+static const uint32_t C_WHITE  = 0xFFFFFF;
+static const uint32_t C_GRAY   = 0x8A8F98;
+static const uint32_t C_DIM    = 0x232733;
+static const uint32_t C_GREEN  = 0x3DD68C;
+static const uint32_t C_BLUE   = 0x4C8DFF;
+static const uint32_t C_AMBER  = 0xF5A524;
+static const uint32_t C_RED    = 0xFF5C5C;
+static const uint32_t C_CYAN   = 0x5CE1E6;
+static const uint32_t C_PURPLE = 0xA78BFA;
+static const uint32_t C_PURPLE_BG = 0x2A2440;
 
 static const char *PRESET_TEXT = "안녕! 지금 몇 시인지 한 문장으로 알려줘.";
+
+// Layout tuned to the 466x466 circle: at a given y the usable half-width is sqrt(233^2 - (y-233)^2),
+// so anything near the top or the bottom has to stay narrow or the bezel clips it.
+static constexpr int W_HOST = 210, Y_HOST  = 32;
+static constexpr int W_MODE = 200, Y_MODE  = 56, H_MODE = 28;
+static constexpr int W_BOX  = 344, Y_BOX   = 92, H_BOX  = 182;
+static constexpr int Y_STAGE = 282, Y_BAR  = 308;
+static constexpr int MIC_D  = 88,  Y_MIC   = 324;
+static constexpr int SIDE_D = 52,  Y_SIDE  = 342, X_SIDE = 96;
 
 VoiceChat *VoiceChat::_instance = nullptr;
 
@@ -65,6 +78,7 @@ bool VoiceChat::run(void)
 {
     buildUi(lv_scr_act());
     _seen = 0;
+    _lastReplyLen = 0;
     refresh();
     _timer = lv_timer_create(timerCb, 100, this);   // recycled by the core on close
     return true;
@@ -100,10 +114,18 @@ void VoiceChat::micEvent(lv_event_t *e)
     }
 }
 
-void VoiceChat::textEvent(lv_event_t *)  { Core::instance().sendText(PRESET_TEXT); }
-void VoiceChat::clearEvent(lv_event_t *) { Core::instance().clear(); }
+void VoiceChat::textEvent(lv_event_t *) { Core::instance().sendText(PRESET_TEXT); }
 
-// ---------------------------------------------------------------- UI
+// Square button means stop, not delete: it aborts the recording, the host request and the answer audio.
+void VoiceChat::stopEvent(lv_event_t *) { Core::instance().cancel(); }
+
+void VoiceChat::modeEvent(lv_event_t *)
+{
+    Core &c = Core::instance();
+    c.setMode(c.mode() == AnswerMode::TextAndVoice ? AnswerMode::TextOnly : AnswerMode::TextAndVoice);
+}
+
+// ---------------------------------------------------------------- UI helpers
 static lv_obj_t *mkLabel(lv_obj_t *parent, const char *txt, const lv_font_t *font, uint32_t color)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -114,19 +136,18 @@ static lv_obj_t *mkLabel(lv_obj_t *parent, const char *txt, const lv_font_t *fon
 }
 
 // `code` must be a specific event (LV_EVENT_CLICKED, ...). Registering LV_EVENT_ALL here would fire the
-// callback on every draw/refresh event too - that once turned the T button into a prompt flood.
-static lv_obj_t *mkRoundBtn(lv_obj_t *parent, int size, uint32_t color, const char *txt, const lv_font_t *font,
-                            lv_event_cb_t cb, lv_event_code_t code)
+// callback on every draw/refresh event too — that once turned the T button into a prompt flood.
+static lv_obj_t *mkBtn(lv_obj_t *parent, int w, int h, int radius, uint32_t color,
+                       lv_event_cb_t cb, lv_event_code_t code)
 {
     lv_obj_t *b = lv_button_create(parent);
-    lv_obj_set_size(b, size, size);
-    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(b, w, h);
+    lv_obj_set_style_radius(b, radius, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(color), 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(color), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
     lv_obj_add_event_cb(b, cb, code, nullptr);
-    lv_obj_t *l = mkLabel(b, txt, font, C_WHITE);
-    lv_obj_center(l);
     return b;
 }
 
@@ -137,14 +158,21 @@ void VoiceChat::buildUi(lv_obj_t *scr)
 
     // top: host line
     _lblHost = mkLabel(scr, "BLE 대기 중", &font_nanum_18, C_GRAY);
-    lv_obj_set_width(_lblHost, 300);
+    lv_obj_set_width(_lblHost, W_HOST);
+    lv_label_set_long_mode(_lblHost, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(_lblHost, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(_lblHost, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_align(_lblHost, LV_ALIGN_TOP_MID, 0, Y_HOST);
+
+    // the setting: text answer only, or text plus a spoken answer through the speaker
+    _btnMode = mkBtn(scr, W_MODE, H_MODE, H_MODE / 2, C_DIM, modeEvent, LV_EVENT_CLICKED);
+    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, 0, Y_MODE);
+    _lblMode = mkLabel(_btnMode, "답변: 텍스트", &font_nanum_18, C_GRAY);
+    lv_obj_center(_lblMode);
 
     // middle: conversation box (scrollable)
     _box = lv_obj_create(scr);
-    lv_obj_set_size(_box, 360, 210);
-    lv_obj_align(_box, LV_ALIGN_TOP_MID, 0, 70);
+    lv_obj_set_size(_box, W_BOX, H_BOX);
+    lv_obj_align(_box, LV_ALIGN_TOP_MID, 0, Y_BOX);
     lv_obj_set_style_bg_color(_box, lv_color_hex(C_DIM), 0);
     lv_obj_set_style_bg_opa(_box, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(_box, 0, 0);
@@ -155,85 +183,131 @@ void VoiceChat::buildUi(lv_obj_t *scr)
     lv_obj_set_scroll_dir(_box, LV_DIR_VER);
 
     _lblUser = mkLabel(_box, "", &font_nanum_18, C_CYAN);
-    lv_obj_set_width(_lblUser, 330);
+    lv_obj_set_width(_lblUser, W_BOX - 32);
     lv_label_set_long_mode(_lblUser, LV_LABEL_LONG_WRAP);
-    _lblAi = mkLabel(_box, "마이크 버튼을 누른 채 말하세요.", &font_nanum_18, C_WHITE);
-    lv_obj_set_width(_lblAi, 330);
+    _lblAi = mkLabel(_box, "마이크를 누른 채 말하세요.", &font_nanum_18, C_WHITE);
+    lv_obj_set_width(_lblAi, W_BOX - 32);
     lv_label_set_long_mode(_lblAi, LV_LABEL_LONG_WRAP);
 
-    // stage line + level bar
+    // stage line + progress bar (input level while recording, download progress while receiving speech)
     _lblStage = mkLabel(scr, "", &font_nanum_18, C_GRAY);
     lv_obj_set_width(_lblStage, 300);
+    lv_label_set_long_mode(_lblStage, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(_lblStage, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(_lblStage, LV_ALIGN_TOP_MID, 0, 290);
+    lv_obj_align(_lblStage, LV_ALIGN_TOP_MID, 0, Y_STAGE);
 
     _bar = lv_bar_create(scr);
     lv_obj_set_size(_bar, 200, 6);
-    lv_obj_align(_bar, LV_ALIGN_TOP_MID, 0, 318);
+    lv_obj_align(_bar, LV_ALIGN_TOP_MID, 0, Y_BAR);
     lv_bar_set_range(_bar, 0, 100);
     lv_obj_set_style_bg_color(_bar, lv_color_hex(C_DIM), LV_PART_MAIN);
     lv_obj_set_style_bg_color(_bar, lv_color_hex(C_GREEN), LV_PART_INDICATOR);
     lv_obj_add_flag(_bar, LV_OBJ_FLAG_HIDDEN);
 
-    // bottom: [TEXT]  (MIC)  [CLR]
-    // hold-to-talk: three separate registrations so no draw/refresh event can reach the handler
-    _btnMic = mkRoundBtn(scr, 96, C_BLUE, LV_SYMBOL_AUDIO, &lv_font_montserrat_28, micEvent, LV_EVENT_PRESSED);
+    // bottom row: [T]  (mic, hold to talk)  [stop]
+    _btnMic = mkBtn(scr, MIC_D, MIC_D, LV_RADIUS_CIRCLE, C_BLUE, micEvent, LV_EVENT_PRESSED);
     lv_obj_add_event_cb(_btnMic, micEvent, LV_EVENT_RELEASED, nullptr);
     lv_obj_add_event_cb(_btnMic, micEvent, LV_EVENT_PRESS_LOST, nullptr);
-    lv_obj_align(_btnMic, LV_ALIGN_TOP_MID, 0, 334);
-    _lblMic = lv_obj_get_child(_btnMic, 0);
+    lv_obj_align(_btnMic, LV_ALIGN_TOP_MID, 0, Y_MIC);
+    _imgMic = lv_image_create(_btnMic);
+    lv_image_set_src(_imgMic, &chat_icon_mic_48);
+    lv_obj_center(_imgMic);
 
-    _btnText = mkRoundBtn(scr, 56, C_DIM, "T", &lv_font_montserrat_22, textEvent, LV_EVENT_CLICKED);
-    lv_obj_align(_btnText, LV_ALIGN_TOP_MID, -96, 354);
-    _btnClear = mkRoundBtn(scr, 56, C_DIM, LV_SYMBOL_TRASH, &lv_font_montserrat_20, clearEvent, LV_EVENT_CLICKED);
-    lv_obj_align(_btnClear, LV_ALIGN_TOP_MID, 96, 354);
+    _btnText = mkBtn(scr, SIDE_D, SIDE_D, LV_RADIUS_CIRCLE, C_DIM, textEvent, LV_EVENT_CLICKED);
+    lv_obj_align(_btnText, LV_ALIGN_TOP_MID, -X_SIDE, Y_SIDE);
+    lv_obj_center(mkLabel(_btnText, "T", &lv_font_montserrat_22, C_WHITE));
+
+    _btnStop = mkBtn(scr, SIDE_D, SIDE_D, LV_RADIUS_CIRCLE, C_DIM, stopEvent, LV_EVENT_CLICKED);
+    lv_obj_align(_btnStop, LV_ALIGN_TOP_MID, X_SIDE, Y_SIDE);
+    lv_obj_center(mkLabel(_btnStop, LV_SYMBOL_STOP, &lv_font_montserrat_20, C_WHITE));
 }
 
 void VoiceChat::refresh()
 {
     Core &core = Core::instance();
     uint32_t v = core.version();
-    // level bar/timer need updating even without a version bump while recording
     Snapshot s;
     core.snapshot(s);
     bool recording = s.stage == Stage::Recording;
-    if (v == _seen && !recording) return;
+    if (v == _seen && !recording) return;      // the level bar still needs ticks while recording
     _seen = v;
 
-    char buf[160];
-    if (!s.bleConnected)      snprintf(buf, sizeof(buf), "BLE 연결 대기 중 (claude-hud)");
-    else if (!s.hostOnline)   snprintf(buf, sizeof(buf), "BLE 연결됨 · 호스트 응답 대기");
-    else                      snprintf(buf, sizeof(buf), "%s · %s", s.host, s.provider);
+    char buf[192];
+    if (!s.bleConnected)    snprintf(buf, sizeof(buf), "BLE 연결 대기 중");
+    else if (!s.hostOnline) snprintf(buf, sizeof(buf), "호스트 응답 대기");
+    else                    snprintf(buf, sizeof(buf), "%s · %s", s.host, s.provider);
     lv_label_set_text(_lblHost, buf);
 
+    // the answer-mode pill only means something when the host actually has a voice installed
+    if (s.hostTts) {
+        lv_obj_remove_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
+        bool voice = s.mode == AnswerMode::TextAndVoice;
+        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX " 답변: 텍스트+음성" : "답변: 텍스트");
+        lv_obj_set_style_text_color(_lblMode, lv_color_hex(voice ? C_PURPLE : C_GRAY), 0);
+        lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), 0);
+        lv_obj_set_style_bg_color(_btnMode, lv_color_hex(voice ? C_PURPLE_BG : C_DIM), LV_STATE_PRESSED);
+    } else {
+        lv_obj_add_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
+    }
+
     lv_label_set_text(_lblUser, s.transcript[0] ? s.transcript : "");
-    if (s.reply[0])             lv_label_set_text(_lblAi, s.reply);
-    else if (s.stage == Stage::Idle && !s.transcript[0]) lv_label_set_text(_lblAi, "마이크 버튼을 누른 채 말하세요.");
-    else                        lv_label_set_text(_lblAi, "");
+    if (s.reply[0])                                      lv_label_set_text(_lblAi, s.reply);
+    else if (s.stage == Stage::Idle && !s.transcript[0]) lv_label_set_text(_lblAi, "마이크를 누른 채 말하세요.");
+    else                                                 lv_label_set_text(_lblAi, "");
 
     const char *stage = "";
     uint32_t micColor = C_BLUE;
     switch (s.stage) {
-    case Stage::Idle:      stage = s.micOk ? "누르고 말하기" : "누르고 말하기 (마이크 초기화 대기)"; break;
-    case Stage::Recording: snprintf(buf, sizeof(buf), "듣는 중… %lu.%lus", (unsigned long)(s.recMs / 1000), (unsigned long)((s.recMs / 100) % 10));
-                           stage = buf; micColor = C_RED; break;
-    case Stage::Sending:   stage = "전송 완료, 호스트 대기…"; micColor = C_AMBER; break;
-    case Stage::Stt:       stage = "음성 인식 중…"; micColor = C_AMBER; break;
-    case Stage::Think:     stage = "생각 중…"; micColor = C_AMBER; break;
-    case Stage::Reply:     stage = s.replyDone ? "완료" : "답변 수신 중…"; micColor = s.replyDone ? C_GREEN : C_AMBER; break;
-    case Stage::Busy:      stage = "호스트가 바쁩니다, 잠시 후 다시"; micColor = C_AMBER; break;
-    case Stage::Error:     snprintf(buf, sizeof(buf), "오류: %s", s.error); stage = buf; micColor = C_RED; break;
+    case Stage::Idle:
+        stage = s.micOk ? "누르고 말하기" : "누르고 말하기 (마이크 준비 전)";
+        break;
+    case Stage::Recording:
+        snprintf(buf, sizeof(buf), "듣는 중… %lu.%lus",
+                 (unsigned long)(s.recMs / 1000), (unsigned long)((s.recMs / 100) % 10));
+        stage = buf; micColor = C_RED;
+        break;
+    case Stage::Sending: stage = "전송 중…";      micColor = C_AMBER; break;
+    case Stage::Stt:     stage = "음성 인식 중…"; micColor = C_AMBER; break;
+    case Stage::Think:   stage = "생각 중…";      micColor = C_AMBER; break;
+    case Stage::Reply:
+        stage = s.replyDone ? "완료" : "답변 수신 중…";
+        micColor = s.replyDone ? C_GREEN : C_AMBER;
+        break;
+    case Stage::Speaking:
+        if (s.speakWant && s.speakGot < s.speakWant)
+            snprintf(buf, sizeof(buf), "음성 받는 중… %lu%%", (unsigned long)(100UL * s.speakGot / s.speakWant));
+        else
+            snprintf(buf, sizeof(buf), "음성 재생 중…");
+        stage = buf; micColor = C_PURPLE;
+        break;
+    case Stage::Busy:
+        stage = "이전 요청 정리 중…"; micColor = C_AMBER;
+        break;
+    case Stage::Error:
+        snprintf(buf, sizeof(buf), "오류: %s", s.error); stage = buf; micColor = C_RED;
+        break;
     }
     lv_label_set_text(_lblStage, stage);
     lv_obj_set_style_bg_color(_btnMic, lv_color_hex(micColor), 0);
     lv_obj_set_style_bg_color(_btnMic, lv_color_hex(micColor), LV_STATE_PRESSED);
 
+    // stop lights up only while there is something to stop
+    bool canStop = s.stage != Stage::Idle && s.stage != Stage::Error &&
+                   !(s.stage == Stage::Reply && s.replyDone);
+    lv_obj_set_style_bg_color(_btnStop, lv_color_hex(canStop ? C_RED : C_DIM), 0);
+
     if (recording) {
         lv_obj_remove_flag(_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(_bar, lv_color_hex(C_GREEN), LV_PART_INDICATOR);
         lv_bar_set_value(_bar, (int)(s.level * 100), LV_ANIM_OFF);
+    } else if (s.stage == Stage::Speaking && s.speakWant) {
+        lv_obj_remove_flag(_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(_bar, lv_color_hex(C_PURPLE), LV_PART_INDICATOR);
+        lv_bar_set_value(_bar, (int)(100UL * s.speakGot / s.speakWant), LV_ANIM_OFF);
     } else {
         lv_obj_add_flag(_bar, LV_OBJ_FLAG_HIDDEN);
     }
+
     // Scroll to the answer only when it actually grew. Never pass LV_COORD_MAX to lv_obj_scroll_to_y:
     // it is ~5.4e8, and the resulting scroll arithmetic overflows and scrambles every child of _box
     // (both bubbles render as garbage). lv_obj_scroll_to_view does the clamped, correct thing.

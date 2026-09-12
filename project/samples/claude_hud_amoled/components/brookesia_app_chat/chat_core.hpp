@@ -7,7 +7,10 @@
 
 namespace voice_chat {
 
-enum class Stage : uint8_t { Idle, Recording, Sending, Stt, Think, Reply, Error, Busy };
+enum class Stage : uint8_t { Idle, Recording, Sending, Stt, Think, Reply, Speaking, Error, Busy };
+
+// What the host should send back for an answer.
+enum class AnswerMode : uint8_t { TextOnly = 0, TextAndVoice = 1 };
 
 struct Snapshot {
     Stage    stage = Stage::Idle;
@@ -21,9 +24,13 @@ struct Snapshot {
     bool     hostOnline = false;       // H line received on this connection
     bool     bleConnected = false;
     bool     micOk = false;
+    bool     hostTts = false;          // host reported a usable TTS voice in its hello
+    AnswerMode mode = AnswerMode::TextOnly;
     float    level = 0;                // 0..1 input level while recording
     uint32_t recMs = 0;                // recording length so far
     uint32_t framesSent = 0, framesDropped = 0;
+    uint32_t speakMs = 0;              // length of the answer audio the host announced
+    uint32_t speakGot = 0, speakWant = 0;   // frames received / announced
 };
 
 class Core {
@@ -35,15 +42,21 @@ public:
     bool startVoice(uint32_t maxMs = 30000);   // begin capture; false if BLE/host not ready or busy
     void stopVoice();                  // end capture -> host runs STT + chat
     bool sendText(const char *text);   // typed/preset prompt
+    void cancel();                     // stop recording / playback and tell the host to drop the request
     void clear();                      // clear transcript/reply
+
+    AnswerMode mode();                 // persisted in NVS
+    void setMode(AnswerMode m);
 
     void     snapshot(Snapshot &out);
     uint32_t version();                // bumps on every visible change
 
     // internal (public for the task/hook trampolines)
     bool onLine(const char *line, size_t len);
+    bool onFrame(const uint8_t *data, size_t len);
     void captureTask();
     void txTask();
+    void playTask();
 
 private:
     Core() = default;
@@ -63,6 +76,16 @@ private:
     void      *task_ = nullptr;        // TaskHandle_t (capture)
     void      *txTask_ = nullptr;      // TaskHandle_t (outbound lines)
     void      *txQueue_ = nullptr;     // QueueHandle_t of TxMsg
+
+    // answer audio: decoded into PSRAM as frames arrive, played once the host says it is done
+    void      *spk_ = nullptr;         // esp_codec_dev_handle_t (opened lazily)
+    void      *playTask_ = nullptr;
+    uint8_t   *spkBuf_ = nullptr;      // PCM16 @16 kHz
+    size_t     spkCap_ = 0, spkLen_ = 0;
+    int        spkId_ = -1;
+    int        spkLastSeq_ = -1;
+    volatile bool playReady_ = false;  // buffer complete, playTask may start
+    volatile bool playAbort_ = false;
 };
 
 } // namespace voice_chat
