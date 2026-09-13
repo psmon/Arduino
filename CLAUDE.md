@@ -187,6 +187,17 @@ byte stream rather than IP. The device's transport swapped from `MakeTcpStream()
   `voice_styles/{id}.json` is a speaker embedding with no language field — so all **10 voices × 31 languages**
   combine freely. The host enumerates `voice_styles/` and reports the list in `hostinfo`, so the device does not
   carry a hardcoded copy. `AkkaHost.exe --speak "…" --voice M2 --lang en` tries one combination.
+- **Korean TTS trap, cost a full debug round**: SuperTonic's `unicode_indexer.json` has **no composed Hangul**
+  (U+AC00 and every syllable map to −1); only the NFKD jamo (U+1100/U+1161/U+11A8) have ids. The reference
+  implementation relies on `String.Normalize(FormKD)` — and **`InvariantGlobalization=true` makes that a no-op for
+  Hangul**, so every Korean syllable tokenised as −1 and answers came out as noise ("도매크윙" for
+  "대한민국의 수도는 서울이야."). `SuperTonicText.DecomposeHangul` now does the decomposition by the Unicode
+  algorithm so no build property can switch it off, and the host is no longer invariant. Verified: all 10 voices
+  round-trip Korean (8 verbatim, M3/M4 differ by one particle).
+- **The round-trip harness is how to check speech at all**: `AkkaHost.exe --speak "…" --out x.wav` then
+  `--hear x.wav` transcribes it back through the same Whisper. Also `--tokens "…" --lang ko` prints the
+  preprocessed string and its token ids (watch for `unmapped: N of M` — anything but 0 means the text never
+  reached the model properly). Guessing from durations hides exactly this class of bug.
 - **AskBot's own mic is the remaining gap**: `brookesia_app_chat`'s core owns the `esp_codec_dev` microphone
   handle, so a second app cannot open it. That needs the codec to become a shared device service the way WiFi
   did (`device_wifi`), not a copy of the capture code.
