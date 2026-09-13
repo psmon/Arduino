@@ -39,4 +39,12 @@ menu "AskBot (Akka remoting app)"
             akka.remote.use-passive-connections = on (its default), which is what
             lets the device work without a listening socket.
 
+    config ASKBOT_VOLUME
+        int "Speaker volume for spoken answers (0-100)"
+        default 70
+        range 0 100
+        help
+            The host synthesises answers with SuperTonic and streams them as IMA ADPCM
+            at 16 kHz. Only used when the answer mode is "Text + voice".
+
 endmenu

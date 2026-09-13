@@ -3,13 +3,15 @@
 #   pwsh -File run_test.ps1              framework-dependent host (fast build)
 #   pwsh -File run_test.ps1 -Aot         Native AOT host (single exe, no runtime)
 #
-# Covers both layers: the raw protocol (askbot_cli against /user/ask) and the chat
-# flow the device app speaks (askbot_chat against /user/chat). Fails loudly if any
-# question goes unanswered.
+# Covers three layers: the raw protocol (askbot_cli against /user/ask), the chat
+# flow the device app speaks (askbot_chat against /user/chat), and the spoken answer
+# (SuperTonic -> ADPCM -> byte[] messages). Fails loudly if anything goes unanswered.
 param(
     [int]$Port = 2552,
     [switch]$Aot,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # Skip the spoken-answer leg (needs the SuperTonic bundle AgentZeroLite installs).
+    [switch]$NoVoice
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,15 +69,32 @@ try {
     if (-not $ready) { Get-Content $log -ErrorAction SilentlyContinue; throw 'host did not come up' }
 
     Write-Host ''
-    Write-Host '-- 1/2 raw protocol: associate + tell/ask against /user/ask'
+    Write-Host '-- 1/3 raw protocol: associate + tell/ask against /user/ask'
     & cpp/build/askbot_cli.exe --port $Port --verbose --ask 'ping' --ask 'who' --ask '한글 왕복 테스트'
     $code = $LASTEXITCODE
 
     if ($code -eq 0) {
         Write-Host ''
-        Write-Host '-- 2/2 chat flow: client actor against /user/chat (offline echo provider)'
+        Write-Host '-- 2/3 chat flow: client actor against /user/chat (offline echo provider)'
         & cpp/build/askbot_chat.exe --port $Port --say '한글 질문 테스트' --say '/new' --say 'second conversation'
         $code = $LASTEXITCODE
+    }
+
+    if ($code -eq 0 -and -not $NoVoice) {
+        Write-Host ''
+        Write-Host '-- 3/3 spoken answer: SuperTonic -> ADPCM -> byte[] messages -> decoded on the client'
+        $wav = Join-Path ([System.IO.Path]::GetTempPath()) 'askbot_speech.wav'
+        & cpp/build/askbot_chat.exe --port $Port --tts --wav $wav --say '짧게 한 문장으로 답해줘'
+        $code = $LASTEXITCODE
+        if ($code -eq 0) {
+            if (Test-Path $wav) {
+                $kb = [math]::Round((Get-Item $wav).Length / 1KB)
+                Write-Host "   received audio: $wav ($kb KB)"
+            } else {
+                Write-Host '   no audio arrived - is the SuperTonic model installed?'
+                $code = 1
+            }
+        }
     }
 } finally {
     if ($proc -and -not $proc.HasExited) { $proc.Kill() }
@@ -89,4 +108,4 @@ if ($code -ne 0) {
 }
 
 Write-Host ''
-Write-Host "PASS - C++ peer associated with the Akka 1.6 node$(if ($Aot) {' (Native AOT binary)'}) and ran both layers."
+Write-Host "PASS - C++ peer associated with the Akka 1.6 node$(if ($Aot) {' (Native AOT binary)'}) and ran all three layers."

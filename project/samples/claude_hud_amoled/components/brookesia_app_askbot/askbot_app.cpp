@@ -50,7 +50,7 @@ static constexpr int Y_ROW = 56, H_ROW = 28;
 static constexpr int W_PRESET = 146, X_PRESET = -46;
 static constexpr int W_NEW = 84, X_NEW = 77;
 static constexpr int W_BOX = 344, Y_BOX = 92, H_BOX = 182;
-static constexpr int Y_STAGE = 282;
+static constexpr int Y_STAGE = 282, Y_BAR = 304;
 static constexpr int ASK_D = 88, Y_ASK = 318;
 static constexpr int SIDE_D = 52, Y_SIDE = 336, X_SIDE = 96;
 
@@ -128,6 +128,15 @@ void AskBot::presetEvent(lv_event_t *e)
 }
 
 void AskBot::stopEvent(lv_event_t *) { Core::instance().cancel(); }
+
+// Text only, or text plus a spoken answer. The host synthesises with SuperTonic and
+// streams IMA ADPCM frames; the pill only appears when it reported a usable voice.
+void AskBot::modeEvent(lv_event_t *)
+{
+    Core &c = Core::instance();
+    c.setMode(c.mode() == askbot::AnswerMode::TextAndVoice ? askbot::AnswerMode::TextOnly
+                                                           : askbot::AnswerMode::TextAndVoice);
+}
 
 // The chat CLI owns the history (netclaw resumes by session id); this only asks the
 // host actor to move to a fresh one. The old conversation is left behind, not deleted.
@@ -212,6 +221,21 @@ void AskBot::buildUi(lv_obj_t *scr)
     _btnStop = mkBtn(scr, SIDE_D, SIDE_D, LV_RADIUS_CIRCLE, C_DIM, stopEvent, LV_EVENT_CLICKED, this);
     lv_obj_align(_btnStop, LV_ALIGN_TOP_MID, X_SIDE, Y_SIDE);
     lv_obj_center(mkLabel(_btnStop, LV_SYMBOL_STOP, &lv_font_montserrat_20, C_WHITE));
+
+    _btnMode = mkBtn(scr, SIDE_D, SIDE_D, LV_RADIUS_CIRCLE, C_DIM, modeEvent, LV_EVENT_CLICKED, this);
+    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, -X_SIDE, Y_SIDE);
+    _lblMode = mkLabel(_btnMode, LV_SYMBOL_MUTE, &lv_font_montserrat_20, C_GRAY);
+    lv_obj_center(_lblMode);
+    lv_obj_add_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
+
+    // Doubles as the speech-download progress while frames are arriving.
+    _bar = lv_bar_create(scr);
+    lv_obj_set_size(_bar, 200, 6);
+    lv_obj_align(_bar, LV_ALIGN_TOP_MID, 0, Y_BAR);
+    lv_bar_set_range(_bar, 0, 100);
+    lv_obj_set_style_bg_color(_bar, lv_color_hex(C_DIM), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_bar, lv_color_hex(C_PURPLE), LV_PART_INDICATOR);
+    lv_obj_add_flag(_bar, LV_OBJ_FLAG_HIDDEN);
 }
 
 void AskBot::refresh()
@@ -262,6 +286,17 @@ void AskBot::refresh()
         }
         stage = buf;
         break;
+    case Stage::Speaking:
+        if (s.speakWant && s.speakGot < s.speakWant) {
+            snprintf(buf, sizeof(buf), "receiving speech %lu%%",
+                     (unsigned long)(100UL * s.speakGot / s.speakWant));
+        } else {
+            snprintf(buf, sizeof(buf), "speaking %lu.%lus", (unsigned long)(s.speakMs / 1000),
+                     (unsigned long)((s.speakMs / 100) % 10));
+        }
+        stage = buf;
+        askColor = C_PURPLE;
+        break;
     case Stage::Error:
         snprintf(buf, sizeof(buf), "error: %s", s.error);
         stage = buf;
@@ -273,8 +308,25 @@ void AskBot::refresh()
     lv_obj_set_style_bg_color(_btnAsk, lv_color_hex(askColor), LV_STATE_PRESSED);
 
     const bool canStop = s.stage == Stage::Sending || s.stage == Stage::Think ||
-                         (s.stage == Stage::Reply && !s.replyDone);
+                         s.stage == Stage::Speaking || (s.stage == Stage::Reply && !s.replyDone);
     lv_obj_set_style_bg_color(_btnStop, lv_color_hex(canStop ? C_RED : C_DIM), 0);
+
+    // The voice toggle means nothing until the host says it can speak.
+    if (s.hostTts) {
+        lv_obj_remove_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
+        const bool voice = s.mode == askbot::AnswerMode::TextAndVoice;
+        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE);
+        lv_obj_set_style_text_color(_lblMode, lv_color_hex(voice ? C_PURPLE : C_GRAY), 0);
+    } else {
+        lv_obj_add_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (s.stage == Stage::Speaking && s.speakWant) {
+        lv_obj_remove_flag(_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_bar_set_value(_bar, (int)(100UL * s.speakGot / s.speakWant), LV_ANIM_OFF);
+    } else {
+        lv_obj_add_flag(_bar, LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Scroll only when the answer actually grew, and never with LV_COORD_MAX: that
     // overflows the scroll arithmetic and scrambles every child of the box.

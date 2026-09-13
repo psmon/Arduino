@@ -18,7 +18,10 @@
 namespace askbot {
 
 enum class Link : uint8_t { Down, WifiConnecting, WifiFailed, Associating, Up };
-enum class Stage : uint8_t { Idle, Sending, Think, Reply, Error };
+enum class Stage : uint8_t { Idle, Sending, Think, Reply, Speaking, Error };
+
+/// What the host should send back for an answer.
+enum class AnswerMode : uint8_t { TextOnly = 0, TextAndVoice = 1 };
 
 struct Snapshot {
     Link link = Link::Down;
@@ -39,6 +42,12 @@ struct Snapshot {
     uint32_t askMs = 0;         // round trip of the last completed answer
     uint32_t chunks = 0;        // chunks received for the current answer
     uint32_t sent = 0, dropped = 0;
+
+    // Spoken answer (SuperTonic on the host, ADPCM over Akka byte[] messages).
+    AnswerMode mode = AnswerMode::TextOnly;
+    bool     hostTts = false;   // host reported a usable voice in its hostinfo
+    uint32_t speakMs = 0;       // length the host announced
+    uint32_t speakGot = 0, speakWant = 0;   // frames decoded / announced
 };
 
 class Core {
@@ -54,16 +63,21 @@ public:
     void newChat();
     void clear();
 
+    AnswerMode mode();
+    void       setMode(AnswerMode m);
+
     void     snapshot(Snapshot &out);
     uint32_t version();
 
-    // internal
+    // internal (public for the task trampolines)
     void linkTask();
+    void playTask();
 
 private:
     Core() = default;
     bool queueJson(const char *json);
     void onMessage(const char *json);
+    void onSpeechFrame(const uint8_t *data, size_t len);
     void setStage(Stage stage, const char *error = nullptr);
     void bump() { ver_++; }
 
@@ -73,8 +87,24 @@ private:
     int        nextId_ = 1;
     uint32_t   askStartMs_ = 0;
 
-    void *task_ = nullptr;      // TaskHandle_t
+    void *task_ = nullptr;      // TaskHandle_t (link)
     void *queue_ = nullptr;     // QueueHandle_t of char*
+
+    // Answer audio, decoded into PSRAM as frames arrive and played when the host
+    // says the utterance is complete. Two buffers, because the next answer's frames
+    // start arriving while the current one is still playing - the Chat app learned
+    // that the hard way (one buffer truncated a 17 s answer to 3.6 s).
+    void    *spk_ = nullptr;        // esp_codec_dev_handle_t, opened lazily
+    void    *playTask_ = nullptr;   // TaskHandle_t
+    uint8_t *spkBuf_[2] = {nullptr, nullptr};   // PCM16 @ 16 kHz
+    size_t   spkLen_[2] = {0, 0};
+    int      fillIdx_ = 0;          // buffer the frame handler writes into
+    volatile int playIdx_ = -1;     // buffer the play task holds, -1 = none
+    int      pendingIdx_ = -1;      // buffer waiting to be played
+    int      spkId_ = -1;           // request id the current audio belongs to
+    int      spkLastSeq_ = -1;
+    volatile bool playReady_ = false;
+    volatile bool playAbort_ = false;
 };
 
 } // namespace askbot

@@ -26,6 +26,11 @@
   <ItemGroup>
     <PackageReference Include="Akka" Version="1.6.0-beta20260912000155" />
     <PackageReference Include="Akka.Remote" Version="1.6.0-beta20260912000155" />
+    <!-- SuperTonic-3 TTS runs as four ONNX graphs: no Python, no COM, no espeak-ng.
+         Same runtime version AgentZeroLite pins, and the models it already
+         installed under %LOCALAPPDATA%\AgentZeroLite\models\supertonic are used
+         as-is - this host never downloads anything. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" />
   </ItemGroup>
 
   <!-- Akka resolves its provider, transport and serializers from HOCON *by type

@@ -12,6 +12,7 @@ set(AKKA_SRCS
     ${AKKA_ROOT}/src/akka_wire.cpp
     ${AKKA_ROOT}/src/remote_client.cpp
     ${AKKA_ROOT}/src/tcp_stream.cpp
+    ${AKKA_ROOT}/src/ima_adpcm.cpp
 )
 
 # Borrows the NanumGothic font from brookesia_app_claude_hud; needs WiFi/lwIP, which

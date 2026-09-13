@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Akka.Actor;
 using Akka.Event;
 using AskBot.Host.Chat;
+using AskBot.Host.Voice;
 
 namespace AskBot.Host.Actors;
 
@@ -21,11 +23,14 @@ public sealed class ChatActor : UntypedActor
     private readonly HostConfig _config;
     private readonly Dictionary<string, CliProvider> _providers;
 
+    private readonly VoiceSynth? _voice;
+
     // Per-device state, keyed by the sender's address (one entry per board).
     private sealed class Device
     {
         public int Conversation = 1;
         public int RunningRequest;
+        public bool WantsVoice;
         public CancellationTokenSource? Cancel;
     }
 
@@ -34,10 +39,13 @@ public sealed class ChatActor : UntypedActor
     // Local (never serialized) completion messages.
     private sealed record Answered(string Key, int RequestId, string Text, IActorRef Target);
     private sealed record Failed(string Key, int RequestId, string Error, IActorRef Target);
+    private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target);
+    private sealed record SpeechFailed(string Key, int RequestId, string Error, IActorRef Target);
 
-    public ChatActor(HostConfig config)
+    public ChatActor(HostConfig config, VoiceSynth? voice = null)
     {
         _config = config;
+        _voice = voice;
         _providers = new Dictionary<string, CliProvider>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, provider) in config.Providers)
         {
@@ -63,6 +71,23 @@ public sealed class ChatActor : UntypedActor
 
             case Failed failed:
                 Tell(failed.Target, Stage("err", failed.RequestId, text: failed.Error));
+                break;
+
+            case SpeechReady ready:
+                StreamSpeech(ready);
+                break;
+
+            case SpeechFailed failed:
+                // Speech is an extra, not the answer: the text already arrived, so this
+                // ends the utterance rather than failing the request.
+                _log.Warning("speech #{0} failed: {1}", failed.RequestId, failed.Error);
+                Tell(failed.Target, Json.Write(writer =>
+                {
+                    writer.WriteString("t", "answer");
+                    writer.WriteString("st", "speak_end");
+                    writer.WriteNumber("id", failed.RequestId);
+                    writer.WriteString("text", failed.Error);
+                }));
                 break;
 
             // Audio frames will arrive here once voice is wired up; acknowledge the
@@ -113,7 +138,10 @@ public sealed class ChatActor : UntypedActor
                         writer.WriteString("t", "hostinfo");
                         writer.WriteString("host", Environment.MachineName);
                         writer.WriteString("provider", Provider.Name);
-                        writer.WriteBoolean("tts", false);  // voice answers not implemented yet
+                        // The device only offers the voice toggle when the host can
+                        // actually speak, same rule as the BLE app.
+                        writer.WriteBoolean("tts", _voice?.Available == true);
+                        if (_voice?.Available == true) writer.WriteString("voice", _voice.VoiceId);
                         writer.WriteNumber("chat", device.Conversation);
                         writer.WriteNumber("v", 1);
                     }));
@@ -124,6 +152,8 @@ public sealed class ChatActor : UntypedActor
                                  textElement.ValueKind == JsonValueKind.String
                         ? textElement.GetString() ?? ""
                         : "";
+                    device.WantsVoice = root.TryGetProperty("tts", out var tts) &&
+                                        tts.ValueKind == JsonValueKind.True;
                     StartRequest(key, device, id, prompt, sender);
                     break;
 
@@ -225,6 +255,74 @@ public sealed class ChatActor : UntypedActor
             }));
         }
         _log.Info("answered #{0} in {1} chunk(s), {2} chars", answered.RequestId, chunks.Count, text.Length);
+
+        if (device.WantsVoice && _voice?.Available == true && text.Length > 0)
+            StartSpeech(answered.Key, device, answered.RequestId, text, answered.Target);
+    }
+
+    /// <summary>
+    /// Synthesis is CPU-heavy (flow matching over N steps), so it runs off the actor
+    /// thread and comes back as a message. The device has the text already; speech is
+    /// an addition, never a precondition for the answer.
+    /// </summary>
+    private void StartSpeech(string key, Device device, int requestId, string text, IActorRef target)
+    {
+        var voice = _voice!;
+        var cancel = device.Cancel;
+        var self = Self;
+
+        _ = Task.Run(() =>
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var speech = voice.Synthesize(text, requestId, cancel?.Token ?? CancellationToken.None);
+                if (cancel?.IsCancellationRequested != true)
+                    self.Tell(new SpeechReady(key, requestId, speech, sw.ElapsedMilliseconds, target));
+            }
+            catch (OperationCanceledException)
+            {
+                // the device cancelled or asked something newer
+            }
+            catch (Exception ex)
+            {
+                if (cancel?.IsCancellationRequested != true)
+                    self.Tell(new SpeechFailed(key, requestId, ex.Message, target));
+            }
+        });
+    }
+
+    /// <summary>
+    /// Announce the utterance, push the ADPCM frames as byte[] messages, then close it.
+    /// The device buffers the frames and plays them when speak_end arrives - the same
+    /// contract the BLE app uses, so its playback code ports across unchanged.
+    /// </summary>
+    private void StreamSpeech(SpeechReady ready)
+    {
+        var speech = ready.Speech;
+        Tell(ready.Target, Json.Write(writer =>
+        {
+            writer.WriteString("t", "answer");
+            writer.WriteString("st", "speak");
+            writer.WriteNumber("id", ready.RequestId);
+            writer.WriteString("fmt", "adpcm");
+            writer.WriteNumber("rate", speech.Rate);
+            writer.WriteNumber("ch", 1);
+            writer.WriteNumber("frames", speech.Frames.Count);
+            writer.WriteNumber("ms", speech.DurationMs);
+        }));
+
+        foreach (var frame in speech.Frames) ready.Target.Tell(frame, Self);
+
+        Tell(ready.Target, Json.Write(writer =>
+        {
+            writer.WriteString("t", "answer");
+            writer.WriteString("st", "speak_end");
+            writer.WriteNumber("id", ready.RequestId);
+        }));
+
+        _log.Info("spoke #{0}: {1} ms of audio in {2} frames, synthesized in {3} ms",
+            ready.RequestId, speech.DurationMs, speech.Frames.Count, ready.ElapsedMs);
     }
 
     private static string Stage(string stage, int id, string? text = null) => Json.Write(writer =>

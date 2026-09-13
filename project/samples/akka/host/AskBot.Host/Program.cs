@@ -2,6 +2,7 @@ using Akka.Actor;
 using Akka.Configuration;
 using AskBot.Host.Actors;
 using AskBot.Host.Chat;
+using AskBot.Host.Voice;
 
 namespace AskBot.Host;
 
@@ -25,6 +26,28 @@ public static class Program
             return 2;
         }
 
+        using var voice = new VoiceSynth(config.Voice,
+            (level, message) => Console.WriteLine($"[voice/{level}] {message}"));
+
+        // Quick standalone check of the speech path: synthesize to a WAV and exit, no
+        // ActorSystem, no device.
+        //   AskBot.Host.exe --speak "안녕하세요" out.wav
+        var speakText = Arg(args, "--speak");
+        if (speakText != null)
+        {
+            if (!voice.Available)
+            {
+                Console.Error.WriteLine($"voice unavailable: {voice.Status}");
+                return 3;
+            }
+            var outPath = Arg(args, "--out") ?? "speak.wav";
+            var speech = voice.Synthesize(speakText, 0);
+            File.WriteAllBytes(outPath, DeviceAudio.ToWav(speech.Pcm16));
+            Console.WriteLine($"wrote {outPath}: {speech.DurationMs} ms, {speech.Frames.Count} ADPCM frames " +
+                              $"at {speech.Rate} Hz");
+            return 0;
+        }
+
         // Everything here is classic remoting (akka.tcp://), on purpose: Artery exists on
         // the 1.6 branch but ships disabled and is not wire-compatible with the classic
         // protocol the C++ client speaks.
@@ -46,12 +69,13 @@ public static class Program
         // AotProps, not Props.Create<T>(): see AotProps.cs - the reflection path dies
         // in a Native AOT binary.
         var ask = system.ActorOf(AotProps.Of(() => new AskActor()), "ask");
-        system.ActorOf(AotProps.Of(() => new ChatActor(config)), "chat");
+        system.ActorOf(AotProps.Of(() => new ChatActor(config, voice)), "chat");
 
         Console.WriteLine("AskBot host up. Remote actor paths for clients:");
         Console.WriteLine($"  akka.tcp://{sysName}@{advertise}:{port}/user/ask    (echo actor, smoke test)");
         Console.WriteLine($"  akka.tcp://{sysName}@{advertise}:{port}/user/chat   (chat protocol)");
         Console.WriteLine($"providers: {string.Join(", ", config.Providers.Keys)} (default: {config.DefaultProvider})");
+        Console.WriteLine($"voice: {voice.Status}");
         Console.WriteLine();
 
         if (Console.IsInputRedirected)

@@ -4,8 +4,11 @@
 #include <cstring>
 #include <string>
 
+#include "bsp/esp-bsp.h"
 #include "cJSON.h"
+#include "esp_codec_dev.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -18,6 +21,7 @@
 
 #include "akka/remote_client.h"
 #include "akka/transport.h"
+#include "askbot/ima_adpcm.h"
 
 static const char *TAG = "askbot";
 
@@ -29,6 +33,9 @@ constexpr size_t TX_MAX = 640;   // one JSON message; the frame budget is far la
 
 constexpr const char *CHAT_ACTOR = "/user/chat";   // on the host
 constexpr const char *LOCAL_ACTOR = "chat";        // ours: /user/chat on this node
+
+constexpr int    SAMPLE_RATE = 16000;              // what the host resamples SuperTonic down to
+constexpr size_t SPK_MAX_BYTES = 20 * SAMPLE_RATE * 2;   // 20 s of PCM16 per buffer
 
 uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -116,6 +123,7 @@ std::string wifiUp()
 }
 
 void taskTrampoline(void *arg) { ((Core *)arg)->linkTask(); }
+void playTrampoline(void *arg) { ((Core *)arg)->playTask(); }
 
 }  // namespace
 
@@ -140,6 +148,15 @@ void Core::start()
         return;
     }
     task_ = handle;
+
+    // Playback lives on its own task: esp_codec_dev_write blocks until the I2S DMA
+    // has room, which is exactly what must not happen on the socket task.
+    TaskHandle_t play = nullptr;
+    if (xTaskCreatePinnedToCore(playTrampoline, "askbot_spk", 4096, this, 5, &play, 1) == pdPASS) {
+        playTask_ = play;
+    } else {
+        ESP_LOGW(TAG, "play task create failed - answers stay text only");
+    }
 }
 
 // ---------------------------------------------------------------- user actions
@@ -183,13 +200,27 @@ bool Core::sendText(const char *text)
     cJSON_AddStringToObject(js, "t", "text");
     cJSON_AddNumberToObject(js, "id", id);
     cJSON_AddStringToObject(js, "text", text);
-    cJSON_AddBoolToObject(js, "tts", false);   // spoken answers are not wired up yet
+    cJSON_AddBoolToObject(js, "tts", mode() == AnswerMode::TextAndVoice);
     char *out = cJSON_PrintUnformatted(js);
     const bool ok = out && queueJson(out);
     cJSON_free(out);
     cJSON_Delete(js);
     if (!ok) setStage(Stage::Error, "send failed");
     return ok;
+}
+
+AnswerMode Core::mode()
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return s_.mode;
+}
+
+void Core::setMode(AnswerMode m)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    if (s_.mode == m) return;
+    s_.mode = m;
+    bump();
 }
 
 void Core::cancel()
@@ -199,6 +230,7 @@ void Core::cancel()
         std::lock_guard<std::mutex> lock(m_);
         id = s_.reqId;
     }
+    playAbort_ = true;   // stop whatever the speaker is in the middle of
     char js[64];
     snprintf(js, sizeof(js), "{\"t\":\"cancel\",\"id\":%d}", id);
     queueJson(js);
@@ -274,6 +306,8 @@ void Core::onMessage(const char *json)
         snprintf(s_.host, sizeof(s_.host), "%s", cJSON_IsString(h) ? h->valuestring : "?");
         snprintf(s_.provider, sizeof(s_.provider), "%s", cJSON_IsString(p) ? p->valuestring : "?");
         if (cJSON_IsNumber(c)) s_.chatNo = c->valueint;
+        s_.hostTts = cJSON_IsTrue(cJSON_GetObjectItem(js, "tts"));
+        if (!s_.hostTts) s_.mode = AnswerMode::TextOnly;   // nothing to speak with
         s_.hostOnline = true;
         bump();
         cJSON_Delete(js);
@@ -310,6 +344,31 @@ void Core::onMessage(const char *json)
         s_.replyDone = cJSON_IsTrue(cJSON_GetObjectItem(js, "done"));
         s_.stage = Stage::Reply;
         if (s_.replyDone) s_.askMs = nowMs() - askStartMs_;
+    } else if (strcmp(stage, "speak") == 0) {
+        // The host announces the utterance, then pushes ADPCM frames. Decode into the
+        // fill buffer as they arrive; play once "speak_end" says it is complete.
+        const cJSON *id = cJSON_GetObjectItem(js, "id");
+        const cJSON *ms = cJSON_GetObjectItem(js, "ms");
+        const cJSON *fr = cJSON_GetObjectItem(js, "frames");
+        spkId_ = cJSON_IsNumber(id) ? id->valueint : s_.reqId;
+        spkLastSeq_ = -1;
+        // Never fill the buffer the speaker is reading from.
+        fillIdx_ = (playIdx_ == 0) ? 1 : 0;
+        spkLen_[fillIdx_] = 0;
+        s_.speakMs = cJSON_IsNumber(ms) ? (uint32_t)ms->valueint : 0;
+        s_.speakWant = cJSON_IsNumber(fr) ? (uint32_t)fr->valueint : 0;
+        s_.speakGot = 0;
+        s_.stage = Stage::Speaking;
+    } else if (strcmp(stage, "speak_end") == 0) {
+        if (text && *text) {
+            snprintf(s_.error, sizeof(s_.error), "%s", text);
+            s_.stage = s_.reply[0] ? Stage::Reply : Stage::Error;
+        } else if (spkLen_[fillIdx_] > 0) {
+            pendingIdx_ = fillIdx_;
+            playReady_ = true;          // hand it to the play task
+        } else {
+            s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
+        }
     } else if (strcmp(stage, "session") == 0) {
         const cJSON *n = cJSON_GetObjectItem(js, "n");
         if (cJSON_IsNumber(n)) s_.chatNo = n->valueint;
@@ -322,6 +381,101 @@ void Core::onMessage(const char *json)
     }
     bump();
     cJSON_Delete(js);
+}
+
+// ---------------------------------------------------------------- answer audio
+void Core::onSpeechFrame(const uint8_t *data, size_t len)
+{
+    askbot::SpeechFrame frame;
+    if (!askbot::ParseSpeechFrame(data, len, &frame)) return;
+
+    std::lock_guard<std::mutex> lock(m_);
+    if (spkId_ >= 0 && frame.id != (uint8_t)spkId_) return;   // frames of an abandoned answer
+
+    const int b = fillIdx_;
+    if (!spkBuf_[b]) {
+        spkBuf_[b] = (uint8_t *)heap_caps_malloc(SPK_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!spkBuf_[b]) {
+            ESP_LOGE(TAG, "no PSRAM for answer audio");
+            return;
+        }
+    }
+    if (spkLastSeq_ >= 0 && frame.seq != (uint16_t)((spkLastSeq_ + 1) & 0xFFFF)) {
+        ESP_LOGW(TAG, "speech gap at seq %u (expected %d)", frame.seq, (spkLastSeq_ + 1) & 0xFFFF);
+    }
+    spkLastSeq_ = frame.seq;
+
+    spkLen_[b] += askbot::DecodeAdpcmBlockTo(frame.block, frame.block_len, spkBuf_[b] + spkLen_[b],
+                                            SPK_MAX_BYTES - spkLen_[b]);
+    s_.speakGot++;
+    if ((s_.speakGot & 7) == 0) bump();
+}
+
+void Core::playTask()
+{
+    for (;;) {
+        if (!playReady_) {
+            vTaskDelay(pdMS_TO_TICKS(30));
+            continue;
+        }
+        playReady_ = false;
+
+        int idx;
+        size_t len;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            idx = pendingIdx_;
+            len = idx >= 0 ? spkLen_[idx] : 0;
+        }
+        playAbort_ = false;      // the abort belonged to the answer this one replaces
+        if (idx < 0 || len == 0) continue;
+        playIdx_ = idx;
+
+        if (!spk_) {
+            esp_codec_dev_handle_t h = bsp_audio_codec_speaker_init();
+            if (!h) {
+                ESP_LOGW(TAG, "speaker init failed - answer stays text only");
+                playIdx_ = -1;
+                std::lock_guard<std::mutex> lock(m_);
+                spkLen_[idx] = 0;
+                s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
+                bump();
+                continue;
+            }
+            esp_codec_dev_set_out_vol(h, (float)CONFIG_ASKBOT_VOLUME);
+            esp_codec_dev_sample_info_t fs = {};
+            fs.sample_rate = SAMPLE_RATE;
+            fs.channel = 1;
+            fs.bits_per_sample = 16;
+            const int rc = esp_codec_dev_open(h, &fs);
+            if (rc != ESP_CODEC_DEV_OK) {
+                ESP_LOGW(TAG, "speaker open rc=%d", rc);
+                playIdx_ = -1;
+                continue;
+            }
+            spk_ = h;
+            ESP_LOGI(TAG, "speaker ready: %d Hz mono 16-bit", SAMPLE_RATE);
+        }
+
+        ESP_LOGI(TAG, "playing %u ms of answer audio (buffer %d)",
+                 (unsigned)(len / (SAMPLE_RATE * 2 / 1000)), idx);
+        const size_t CHUNK = 2048;
+        for (size_t off = 0; off < len && !playAbort_; off += CHUNK) {
+            const size_t n = len - off < CHUNK ? len - off : CHUNK;
+            // Blocks until the I2S DMA has room, which paces playback for us.
+            if (esp_codec_dev_write((esp_codec_dev_handle_t)spk_, spkBuf_[idx] + off, (int)n) !=
+                ESP_CODEC_DEV_OK) {
+                break;
+            }
+        }
+        playIdx_ = -1;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            spkLen_[idx] = 0;
+            if (s_.stage == Stage::Speaking) s_.stage = s_.reply[0] ? Stage::Reply : Stage::Idle;
+            bump();
+        }
+    }
 }
 
 // ---------------------------------------------------------------- link task
@@ -373,6 +527,11 @@ void Core::linkTask()
         });
         // The client actor. Runs on this task, so it may touch the snapshot directly.
         client.Register(LOCAL_ACTOR, [this](const akka::Message &message) {
+            // Speech arrives as .NET byte[] (serializer 4); everything else is JSON text.
+            if (message.serializer_id == akka::kSerializerByteArray && message.bytes != nullptr) {
+                onSpeechFrame(message.bytes->data(), message.bytes->size());
+                return;
+            }
             if (!message.text.empty()) onMessage(message.text.c_str());
         });
 

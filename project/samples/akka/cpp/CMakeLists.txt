@@ -11,6 +11,7 @@ add_library(akka_remote STATIC
     src/akka_wire.cpp
     src/remote_client.cpp
     src/tcp_stream.cpp
+    src/ima_adpcm.cpp
 )
 target_include_directories(akka_remote PUBLIC include)
 

@@ -144,5 +144,11 @@ BLE-only rule of the other apps does not apply, and WiFi only starts when AskBot
 - Wire facts that bite (handshake carries scheme `tcp` while paths use `akka.tcp`; `seq` must be written as
   `ulong.MaxValue`; string = serializer 17 / manifest `S`; byte[] = serializer 4) are in
   `project/samples/akka/PROTOCOL.md` — read it before touching `cpp/src/akka_wire.cpp`.
-- Voice (mic/STT/TTS) is **not** ported yet: that is still the BLE Chat app's job. Windows `System.Speech` is
-  COM-based and will not survive AOT, so the voice path needs an out-of-process synthesiser.
+- **Spoken answers work**, with **SuperTonic-3** (four ONNX graphs via `Microsoft.ML.OnnxRuntime`; no Python, no
+  COM, so it survives AOT where `System.Speech` cannot). The model is the one AgentZeroLite already installed at
+  `%LOCALAPPDATA%\AgentZeroLite\models\supertonic` — **never download it**; absent model = `tts:false` in
+  `hostinfo` and text-only answers. Host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
+  Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message (serializer 4). Quick check:
+  `AskBot.Host.exe --speak "…" --out hello.wav`.
+- **Microphone → STT is not ported**: speech input is still the BLE Chat app's job. Whisper `ggml-small.bin` is
+  already installed at `~/.ollama/models/agentzero/whisper` if/when that is wired up.

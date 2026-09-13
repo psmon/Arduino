@@ -193,10 +193,47 @@ and redraws per chunk.
 Newest-question-wins: a new `text` cancels the request in flight instead of being
 refused, matching what the BLE host settled on.
 
-## Audio, when it arrives
+## Spoken answers
 
-Voice is not wired up yet. The shape is already decided: microphone and speaker
-frames travel as .NET `byte[]` (serializer id **4**, `ByteArraySerializer`, no
-manifest) via `RemoteClient::TellBytesAs`, carrying the same
-`magic | id | seq | payload` header as the BLE frames - base64 inside JSON would
-cost a third more for nothing. `ChatActor` already recognises `byte[]` and logs it.
+When a `text` request carries `"tts":true` and the host has a voice, the answer is
+also synthesized and streamed:
+
+| direction | message | meaning |
+|---|---|---|
+| host -> device | `{"t":"answer","st":"speak","id":N,"fmt":"adpcm","rate":16000,"ch":1,"frames":K,"ms":M}` | an utterance of K frames follows |
+| host -> device | .NET `byte[]` (serializer **4**, no manifest) | `0xA6 \| id(1) \| seq(2 LE) \| ADPCM block` |
+| host -> device | `{"t":"answer","st":"speak_end","id":N}` | all frames sent; `text` present only on failure |
+
+The device decodes each block into a PSRAM buffer as it arrives and plays the whole
+utterance when `speak_end` lands. Two buffers, because the next answer's frames start
+arriving while the current one is still playing.
+
+`hostinfo` reports `"tts":true` and the voice id only when the model is actually
+installed, so the device hides its voice toggle otherwise - the same degradation the
+BLE app applies.
+
+### Why byte[] and not base64 in JSON
+
+Base64 costs a third more for nothing, and `ByteArraySerializer` (id 4) is a plain
+`Serializer` rather than a `SerializerWithStringManifest`, so the manifest field stays
+empty and the payload is the frame itself. One ADPCM block per message: 960 samples
+(60 ms) in 484 bytes, which keeps the device-side decoder identical to the Chat app's.
+
+### The synthesizer
+
+SuperTonic-3, four ONNX graphs run through `Microsoft.ML.OnnxRuntime`: no Python, no
+espeak-ng, no COM. 44.1 kHz float out, resampled on the host to 16 kHz PCM16 with a
+windowed-sinc kernel (not NAudio - its resamplers go through Media Foundation, which
+would put COM back into a binary that has to survive Native AOT). The model is the one
+AgentZeroLite already installed under
+`%LOCALAPPDATA%\AgentZeroLite\models\supertonic`; nothing is downloaded.
+
+Measured: ~4 s of CPU for ~20 s of Korean audio at 8 denoising steps, plus ~0.9 s of
+one-time model load. It runs inside the Native AOT binary too, which Windows
+`System.Speech` cannot.
+
+## Microphone, when it arrives
+
+Speech *input* is still the BLE Chat app's job. The shape is already fixed by the
+frames above: microphone audio travels the same way in the other direction, magic
+`0xA5`, and `ChatActor` already recognises inbound `byte[]`.

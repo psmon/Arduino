@@ -11,6 +11,7 @@ idf_component_register(
         "${AKKA_ROOT}/src/akka_wire.cpp"
         "${AKKA_ROOT}/src/remote_client.cpp"
         "${AKKA_ROOT}/src/tcp_stream.cpp"
+        "${AKKA_ROOT}/src/ima_adpcm.cpp"
     INCLUDE_DIRS "${AKKA_ROOT}/include"
     REQUIRES lwip
 )

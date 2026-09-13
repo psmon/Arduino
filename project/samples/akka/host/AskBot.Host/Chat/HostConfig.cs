@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AskBot.Host.Voice;
 
 namespace AskBot.Host.Chat;
 
@@ -31,6 +32,8 @@ public sealed class HostConfig
     /// appends chunks into a fixed buffer and redraws per chunk.</summary>
     public int ChunkBytes { get; private set; } = 400;
     public Dictionary<string, ProviderConfig> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Bound from the "Voice" section; defaults point at the installed SuperTonic bundle.</summary>
+    public VoiceOptions Voice { get; private set; } = new();
 
     public bool TrySetDefaultProvider(string name)
     {
@@ -66,6 +69,9 @@ public sealed class HostConfig
         if (chat.TryGetProperty("ChunkBytes", out var chunk) && chunk.TryGetInt32(out var chunkValue))
             config.ChunkBytes = chunkValue;
 
+        if (document.RootElement.TryGetProperty("Voice", out var voice) && voice.ValueKind == JsonValueKind.Object)
+            config.Voice = ReadVoice(voice);
+
         if (chat.TryGetProperty("Providers", out var providers) && providers.ValueKind == JsonValueKind.Object)
         {
             foreach (var entry in providers.EnumerateObject())
@@ -74,6 +80,16 @@ public sealed class HostConfig
         if (config.Providers.Count == 0) config.Providers["echo"] = EchoFallback();
         return config;
     }
+
+    private static VoiceOptions ReadVoice(JsonElement element) => new()
+    {
+        Enabled = !element.TryGetProperty("Enabled", out var enabled) || enabled.ValueKind != JsonValueKind.False,
+        ModelDir = Str(element, "ModelDir") ?? "",
+        Voice = Str(element, "Voice") ?? "F1",
+        Language = Str(element, "Language") ?? "ko",
+        Steps = element.TryGetProperty("Steps", out var steps) && steps.TryGetInt32(out var stepValue) ? stepValue : 8,
+        Speed = element.TryGetProperty("Speed", out var speed) && speed.TryGetSingle(out var speedValue) ? speedValue : 1.05f,
+    };
 
     private static ProviderConfig ReadProvider(JsonElement element) => new()
     {

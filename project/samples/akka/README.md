@@ -20,16 +20,18 @@ a small device at all.
 | Akka.Remote under Native AOT | **works**, with two workarounds (below) |
 | C++ peer: associate, heartbeat, tell/ask | **verified** on the PC, both JIT and AOT hosts |
 | Chat flow (hello / text / streamed reply / cancel / newsession) | **verified** end to end, offline `echo` provider |
-| Device app `brookesia_app_askbot` | **compiles** into the firmware (3.7 MB of an 8 MB partition); not yet run on hardware |
-| Voice (mic → STT, spoken answer) | **not implemented** — the Chat app still owns that, over BLE |
+| Spoken answers (SuperTonic → ADPCM → `byte[]` messages) | **verified** end to end, inside the AOT binary too |
+| Device app `brookesia_app_askbot` | **compiles** into the firmware (text + speaker playback); not yet run on hardware |
+| Microphone → STT | **not implemented** — speech input is still the Chat app's job, over BLE |
 
 ```powershell
 pwsh -File project/samples/akka/run_test.ps1        # framework-dependent host
 pwsh -File project/samples/akka/run_test.ps1 -Aot   # Native AOT host
 ```
 
-Both layers run: `askbot_cli` for the raw protocol, `askbot_chat` for the
-conversation flow. No board and no LLM required.
+Three layers run: `askbot_cli` for the raw protocol, `askbot_chat` for the
+conversation flow, and the spoken answer (`--tts`), which is decoded back to a WAV so
+it can be listened to. No board and no LLM required; `-NoVoice` skips the audio leg.
 
 ## Making Akka.NET work under Native AOT
 
@@ -71,6 +73,31 @@ Akka 1.6 itself is nightly-only — nuget.org's latest stable is 1.5.71 (2026-08
 so `host/nuget.config` adds the official feedz.io feed and the project pins
 `1.6.0-beta20260912000155`.
 
+## Speech
+
+Answers can come back as audio. The host synthesizes with **SuperTonic-3** - four ONNX
+graphs through `Microsoft.ML.OnnxRuntime`, no Python, no espeak-ng, no COM - resamples
+44.1 kHz to 16 kHz, encodes IMA ADPCM and pushes one block per `byte[]` message
+(serializer 4). The device decodes into PSRAM and plays the utterance when the host says
+it is complete.
+
+The model is the one **AgentZeroLite already installed** under
+`%LOCALAPPDATA%\AgentZeroLite\models\supertonic` (383 MB, 10 voices, 31 languages).
+This project never downloads it; if it is absent, `hostinfo` reports `tts:false`, the
+device hides its voice toggle, and answers stay text - the same degradation the BLE host
+applies.
+
+Measured on this machine: ~0.9 s one-time model load, ~4 s of CPU for ~20 s of Korean
+audio at 8 denoising steps. It also runs **inside the Native AOT binary** (27.6 MB exe
+plus a 13.5 MB native `onnxruntime.dll`), which is the reason SuperTonic was the right
+choice: Windows `System.Speech` is COM-based and does not survive AOT at all.
+
+Try it without any of the rest:
+
+```powershell
+AskBot.Host.exe --speak "안녕하세요. 액터 모델로 대답합니다." --out hello.wav
+```
+
 ## Why the actors run on the PC
 
 .NET 10 Native AOT targets Windows / Linux / macOS / iOS / Android on x64, arm64,
@@ -97,9 +124,14 @@ host/                        .NET 10 + Akka 1.6 remoting host
     Chat/CliProvider.cs      runs netclaw / claude / a script as a child process
     Chat/HostConfig.cs       appsettings.json via JsonDocument (AOT-safe)
     Chat/Json.cs             tiny writer + UTF-8-safe chunking
+    Voice/SuperTonic.cs      SuperTonic-3 ONNX pipeline (ported, MIT, Supertone Inc)
+    Voice/DeviceAudio.cs     44.1k -> 16k resampler, IMA ADPCM, frame builder
+    Voice/VoiceSynth.cs      lazy model load, style cache, device-ready frames
     appsettings.json         providers; default is the offline "echo"
 
 cpp/                         the module: portable C++17, no ESP-IDF dependency
+  include/askbot/
+    ima_adpcm.h              ADPCM decoder + WAV writer, shared with the firmware
   include/akka/
     pb.h                     minimal protobuf writer/reader
     akka_wire.h              Akka PDUs (associate, heartbeat, envelope, ack)
@@ -115,9 +147,9 @@ esp32/                       standalone ESP-IDF project (headless, no UI)
   main/main.cpp              WiFi STA -> associate -> ask every 5s
 
 ../claude_hud_amoled/components/brookesia_app_askbot/   the device app
-  askbot_core.cpp            WiFi + association + client actor + chat state
+  askbot_core.cpp            WiFi + association + client actor + chat state + playback
   askbot_app.cpp             LVGL UI, same layout language as the Chat app
-  Kconfig.projbuild          SSID/password, host IP/port, system names
+  Kconfig.projbuild          SSID/password, host IP/port, system names, volume
 ```
 
 ## Running it
@@ -150,9 +182,9 @@ existing claude_hud, Chat and Settings apps are untouched.
 
 ## Next steps
 
-1. Flash and use AskBot on the board (needs WiFi credentials).
-2. Voice parity with the Chat app: mic frames and spoken answers as `byte[]`
-   messages (serializer 4), host-side Whisper STT and TTS. Note that Windows
-   `System.Speech` is COM-based and will not survive AOT — that path needs an
-   out-of-process voice or a different synthesiser.
+1. Flash and use AskBot on the board (needs WiFi credentials) — the speaker path has
+   only been proven against the simulator so far.
+2. Microphone → STT, the other half of Chat parity: mic frames as `0xA5` `byte[]`
+   messages and Whisper on the host (`ggml-small.bin` is already installed next to the
+   SuperTonic bundle).
 3. An on-screen keyboard (`lv_keyboard`) so questions are not limited to presets.
