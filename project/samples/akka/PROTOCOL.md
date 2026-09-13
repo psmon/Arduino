@@ -309,3 +309,23 @@ without touching the watch.
 One microphone, two apps: `device_mic` (in `brookesia_app_claude_hud`) owns the codec handle
 and hands it out reference-counted, so each app holds it only while recording. Before that the
 Chat app held it forever and AskBot could not record at all.
+
+---
+
+# The Claude HUD channel
+
+The same BLE link carries a third app, and it predates all of this: `hud_ble` consumes two
+line tags itself and never passes them to an app hook.
+
+| direction | line | meaning |
+|---|---|---|
+| host -> device | `S {json}` | Claude Code statusLine: session, model, cost, context %, rate limits |
+| host -> device | `E {json}` | Claude Code hook event: `ev`, `tool`, `label`, `host`, `text` |
+
+The payloads are whatever the installed scripts send (`~/.claude/hud_amoled/hud_statusline.ps1`
+and `send_event.ps1`); the host validates that the body parses as JSON and forwards it
+verbatim. Nothing is queued: the HUD is a display, and a status from ten minutes ago is worth
+less than nothing, so lines are dropped while the watch is out of range.
+
+Intake is the contract `ble_bridge.py` defined, kept so that no hook has to be reinstalled:
+`POST /status`, `POST /event`, `GET /health` on `127.0.0.1:8765`.

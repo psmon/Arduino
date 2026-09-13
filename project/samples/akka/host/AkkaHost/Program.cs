@@ -3,6 +3,7 @@ using Akka.Configuration;
 using AkkaHost.Actors;
 using AkkaHost.Ble;
 using AkkaHost.Chat;
+using AkkaHost.Hud;
 using AkkaHost.Voice;
 
 namespace AkkaHost;
@@ -29,6 +30,8 @@ public static class Program
         var settings = Arg(args, "--config") ?? Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         var deviceName = Arg(args, "--device") ?? "claude-hud";
         var noBle = HasFlag(args, "--no-ble");
+        var hudPort = int.TryParse(Arg(args, "--hud-port"), out var hudValue) ? hudValue : 8765;
+        var noHud = HasFlag(args, "--no-hud");
 
         var config = HostConfig.Load(settings);
         var provider = Arg(args, "--provider");
@@ -136,6 +139,7 @@ public static class Program
 
         BleLink? link = null;
         BleTunnel? tunnel = null;
+        HudEndpoint? hud = null;
         if (!noBle)
         {
             link = new BleLink((level, message) => Console.WriteLine($"[ble/{level}] {message}"));
@@ -180,8 +184,22 @@ public static class Program
                 });
             }
 
+            // The third app on the same link: Claude Code's statusLine and hooks post to the
+            // local port they were installed against, and the HUD app renders the S/E lines.
+            if (!noHud)
+            {
+                var hudActor = system.ActorOf(AotProps.Of(() => new HudActor(link)), "hud");
+                hud = new HudEndpoint(hudActor, hudPort,
+                    (level, message) => Console.WriteLine($"[hud/{level}] {message}"));
+                if (!hud.Start())
+                {
+                    hud.Dispose();
+                    hud = null;
+                }
+            }
+
             _ = Task.Run(() => KeepLinkUpAsync(link, deviceName));
-            Console.WriteLine($"BLE: keeping a link to '{deviceName}' (AskBot tunnel + Chat protocol)");
+            Console.WriteLine($"BLE: keeping a link to '{deviceName}' (AskBot tunnel + Chat protocol + Claude HUD)");
         }
         else
         {
@@ -221,6 +239,7 @@ public static class Program
             }
         }
 
+        hud?.Dispose();
         if (tunnel != null) tunnel.DisposeAsync().GetAwaiter().GetResult();
         link?.Dispose();
         system.Terminate().GetAwaiter().GetResult();

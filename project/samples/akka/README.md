@@ -8,14 +8,14 @@ a small device at all.
 ```
 [ESP32-S3-Touch-AMOLED-1.75C]                        [PC]  host/  AkkaHost.exe
                                                      .NET 10 + Akka 1.6
- AskBot app   Akka PDUs --0xAB--\                     BleLink (owns the single BLE link)
-                                 >--- one BLE link ---+-- BleTunnel --> TCP 2552 --> /user/chat
- Chat app     R/A lines, 0xA6 --/                      +-- BleChatProxy ----------->  ChatActor
-                                                                                       |
- Settings app (owns a WiFi service, off by default)                        chat CLI + SuperTonic
+ AskBot app     Akka PDUs --0xAB--\                   BleLink (owns the single BLE link)
+ Chat app       R/A lines, 0xA6 ---+-- one BLE link --+-- BleTunnel ---> TCP 2552 -> /user/chat
+ Claude HUD     S/E lines --------/                    +-- BleChatProxy -----------> ChatActor
+                                                       +-- HudActor <- :8765 <- Claude Code
+ Settings app (WiFi service, off by default)                        chat CLI + SuperTonic + whisper
 ```
 
-One host, one link, both apps. AskBot is a real remoting peer whose PDUs are tunnelled over
+One host, one link, all three apps. AskBot is a real remoting peer whose PDUs are tunnelled over
 BLE; the Chat app keeps its line protocol and a proxy actor turns it into the same messages.
 Neither firmware app needed changing for that, and there is no WiFi anywhere in the path.
 
@@ -31,6 +31,7 @@ Neither firmware app needed changing for that, and there is no WiFi anywhere in 
 | On the watch: the Chat app served by the same actors | **verified on hardware** (same answer, same voice) |
 | Microphone → STT (Whisper) | **verified on hardware** from both apps - AskBot has its own hold-to-talk button |
 | Voice settings on the watch (listen / speak / voice) | **verified on hardware**: `spoke #1 as M2/en` |
+| Claude HUD app served by the same host | **verified on hardware**: `rx S 205 bytes -> ok` |
 
 ```powershell
 pwsh -File project/samples/akka/run_test.ps1        # framework-dependent host
@@ -126,6 +127,30 @@ Two findings worth keeping:
 
 `AkkaHost.exe --talk 4000` asks the watch to record for four seconds on connect - how this
 was tested without touching the device.
+
+## The Claude HUD rides along
+
+The third app on the link shows what a Claude Code session is doing. Its firmware consumes
+`S` (statusLine) and `E` (hook event) lines, which `hud_ble` handles itself - so the device
+needed no change at all; what changed is who writes them.
+
+`AkkaHost` keeps the contract `claude_hud_amoled/pc/ble_bridge.py` established, byte for byte:
+
+```
+POST http://127.0.0.1:8765/status   {json}   ->  "S {json}"  to the watch
+POST http://127.0.0.1:8765/event    {json}   ->  "E {json}"
+GET  http://127.0.0.1:8765/health
+```
+
+So the hooks already installed in `~/.claude/hud_amoled` keep working and `settings.json` is
+untouched. `HttpListener`, three routes, no ASP.NET. The lines go out through a `HudActor` so
+that a statusLine update and a hook event arriving on different HTTP threads serialise behind
+one mailbox - and so a later consumer (session state on AskBot's screen, say) subscribes
+instead of racing for the link.
+
+Only one process can hold port 8765 and the BLE link: run `AkkaHost` **or**
+`ble_bridge.py`, never both. AkkaHost says so explicitly if the port is taken.
+`--no-hud` leaves the port alone; `--hud-port` moves it.
 
 ## The microphone belongs to the device
 

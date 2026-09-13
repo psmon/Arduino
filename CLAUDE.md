@@ -138,6 +138,12 @@ app is `claude_hud_amoled/components/brookesia_app_askbot/`.
   apps share one `ChatActor`, one chat CLI and one SuperTonic voice. **The Chat firmware needed no changes.**
   Trap already documented in `amoled_chat_host/PROTOCOL.md` and hit anyway: never answer the device's `R hello`
   with another `H` — it ping-pongs forever (measured 175 ms per lap).
+- **The Claude HUD is the third app on the link**: `Hud/HudEndpoint.cs` keeps `ble_bridge.py`'s contract byte for
+  byte (`POST /status` → `S {json}`, `POST /event` → `E {json}`, `GET /health`, on `127.0.0.1:8765`) so the hooks
+  already installed in `~/.claude/hud_amoled` work unchanged and `settings.json` is untouched. `HttpListener`,
+  not ASP.NET; lines go through `HudActor` so concurrent HTTP threads serialise behind one mailbox, and they are
+  dropped (not queued) while the watch is out of range. `--no-hud` / `--hud-port` control it. Verified on
+  hardware: `hud_ble: rx S 205 bytes -> ok`.
 - `AkkaHost` must be the only process holding the link — `amoled_chat_host`'s ChatHost does the same job for
   Chat alone, so run one or the other. `--no-ble` skips the central (what `run_test.ps1` uses).
 
