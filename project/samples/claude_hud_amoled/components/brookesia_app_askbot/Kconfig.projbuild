@@ -1,13 +1,23 @@
-# WiFi credentials are not here: they belong to the device, and the Settings app owns
-# them (see components/brookesia_app_settings/Kconfig.projbuild).
+# No WiFi settings here (or needed at all): the Akka PDUs ride the BLE link, relayed
+# by pc/ble_akka_bridge.py. The Settings app still owns a WiFi service for anything
+# that wants IP later, and it stays off while no SSID is configured.
 menu "AskBot (Akka remoting app)"
 
+    config ASKBOT_LOCAL_HOST
+        string "Host name this device advertises in the handshake"
+        default "askbot-ble"
+        help
+            Cosmetic but required: Akka refuses to serialise an address without a host
+            and a port. Nothing dials it - the peer answers down the BLE tunnel the
+            device opened, because akka.remote.use-passive-connections is on.
+
     config ASKBOT_HOST_IP
-        string "AskBot.Host IP address"
+        string "AskBot.Host address, as the PC-side bridge sees it"
         default "192.168.0.10"
         help
             Must equal what the host advertises (its --host argument, i.e.
-            akka.remote.dot-netty.tcp.public-hostname). 127.0.0.1 cannot work here.
+            akka.remote.dot-netty.tcp.public-hostname). With the BLE bridge the host and
+            the bridge are the same machine, so 127.0.0.1 is exactly right.
 
     config ASKBOT_HOST_PORT
         int "AskBot.Host port"

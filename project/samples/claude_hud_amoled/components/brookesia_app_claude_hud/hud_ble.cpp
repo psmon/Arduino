@@ -43,10 +43,15 @@ static uint16_t    s_mtu = 23;
 static bool        s_txSubscribed = false;
 static bool        s_started = false;
 static LineHook    s_lineHook = nullptr;
-static FrameHook   s_frameHook = nullptr;
+
+// More than one app wants binary writes now: Chat takes 0xA6 speech frames, AskBot
+// takes 0xAB tunnel chunks. Hooks are tried in order until one claims the frame.
+static constexpr int MAX_FRAME_HOOKS = 4;
+static FrameHook   s_frameHooks[MAX_FRAME_HOOKS] = {};
 
 // First byte of a host->device binary write. Cannot collide with a text line: every tag is ASCII.
 static constexpr uint8_t SPEECH_MAGIC = 0xA6;
+static constexpr uint8_t TUNNEL_MAGIC = 0xAB;
 
 static void setErr(const char *msg, int rc)
 {
@@ -114,9 +119,12 @@ static int rxAccess(uint16_t, uint16_t, struct ble_gatt_access_ctxt *ctxt, void 
     if (len > sizeof(buf)) len = sizeof(buf);
     uint16_t out = 0;
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, len, &out) != 0) return BLE_ATT_ERR_UNLIKELY;
-    if (out >= 4 && (uint8_t)buf[0] == SPEECH_MAGIC) {
-        // Binary speech frame, never text: hand it over whole and keep it out of the line buffer.
-        if (s_frameHook) s_frameHook((const uint8_t *)buf, out);
+    const uint8_t magic = out >= 1 ? (uint8_t)buf[0] : 0;
+    if (out >= 2 && (magic == SPEECH_MAGIC || magic == TUNNEL_MAGIC)) {
+        // Binary, never text: hand it over whole and keep it out of the line buffer.
+        for (int i = 0; i < MAX_FRAME_HOOKS; ++i) {
+            if (s_frameHooks[i] && s_frameHooks[i]((const uint8_t *)buf, out)) break;
+        }
         return 0;
     }
     feed(buf, out);
@@ -243,7 +251,17 @@ int  bleMaxPayload()
     return n < 20 ? 20 : n;
 }
 void setLineHook(LineHook hook) { s_lineHook = hook; }
-void setFrameHook(FrameHook hook) { s_frameHook = hook; }
+void setFrameHook(FrameHook hook)
+{
+    for (int i = 0; i < MAX_FRAME_HOOKS; ++i) {
+        if (s_frameHooks[i] == hook) return;          // idempotent
+        if (s_frameHooks[i] == nullptr) {
+            s_frameHooks[i] = hook;
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "frame hook table full, hook dropped");
+}
 
 bool bleNotify(const uint8_t *data, size_t len)
 {

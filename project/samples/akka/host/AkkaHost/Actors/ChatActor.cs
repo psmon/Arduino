@@ -2,10 +2,10 @@ using System.Diagnostics;
 using System.Text.Json;
 using Akka.Actor;
 using Akka.Event;
-using AskBot.Host.Chat;
-using AskBot.Host.Voice;
+using AkkaHost.Chat;
+using AkkaHost.Voice;
 
-namespace AskBot.Host.Actors;
+namespace AkkaHost.Actors;
 
 /// <summary>
 /// The device-facing actor: same conversation flow as amoled_chat_host's BLE

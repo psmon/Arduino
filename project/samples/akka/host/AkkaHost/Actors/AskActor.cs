@@ -1,7 +1,7 @@
 using Akka.Actor;
 using Akka.Event;
 
-namespace AskBot.Host.Actors;
+namespace AkkaHost.Actors;
 
 /// <summary>
 /// The one actor the device talks to. Deliberately dumb: it answers a string with a

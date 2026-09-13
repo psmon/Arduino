@@ -1,4 +1,4 @@
-namespace AskBot.Host.Voice;
+namespace AkkaHost.Voice;
 
 public sealed class VoiceOptions
 {

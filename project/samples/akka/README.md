@@ -6,22 +6,29 @@ The question this sample exists to settle is whether the actor model is usable f
 a small device at all.
 
 ```
-[ESP32-S3-Touch-AMOLED-1.75C]                         [PC]
- AskBot app (LVGL, C++)                  host/  AskBot.Host.exe  (Native AOT, 26 MB, no runtime needed)
- client actor:                            .NET 10 + Akka 1.6
-  akka.tcp://askbot-device@ip:2553          /user/chat  ChatActor  -> chat CLI (netclaw / claude / echo)
-  /user/chat        ── TCP (WiFi) ──        /user/ask   AskActor   (echo, smoke test)
+[ESP32-S3-Touch-AMOLED-1.75C]                        [PC]  host/  AkkaHost.exe
+                                                     .NET 10 + Akka 1.6
+ AskBot app   Akka PDUs --0xAB--\                     BleLink (owns the single BLE link)
+                                 >--- one BLE link ---+-- BleTunnel --> TCP 2552 --> /user/chat
+ Chat app     R/A lines, 0xA6 --/                      +-- BleChatProxy ----------->  ChatActor
+                                                                                       |
+ Settings app (owns a WiFi service, off by default)                        chat CLI + SuperTonic
 ```
+
+One host, one link, both apps. AskBot is a real remoting peer whose PDUs are tunnelled over
+BLE; the Chat app keeps its line protocol and a proxy actor turns it into the same messages.
+Neither firmware app needed changing for that, and there is no WiFi anywhere in the path.
 
 ## Status
 
 | | |
 |---|---|
-| Akka.Remote under Native AOT | **works**, with two workarounds (below) |
+| Akka.Remote under Native AOT | **works** for the remoting core, with two workarounds (below); the BLE central pulls in WinRT, so AOT is unverified since |
 | C++ peer: associate, heartbeat, tell/ask | **verified** on the PC, both JIT and AOT hosts |
 | Chat flow (hello / text / streamed reply / cancel / newsession) | **verified** end to end, offline `echo` provider |
 | Spoken answers (SuperTonic → ADPCM → `byte[]` messages) | **verified** end to end, inside the AOT binary too |
-| Device app `brookesia_app_askbot` | **compiles** into the firmware (text + speaker playback); not yet run on hardware |
+| On the watch: AskBot associates and speaks | **verified on hardware** over BLE, no WiFi |
+| On the watch: the Chat app served by the same actors | **verified on hardware** (same answer, same voice) |
 | Microphone → STT | **not implemented** — speech input is still the Chat app's job, over BLE |
 
 ```powershell
@@ -98,6 +105,26 @@ Try it without any of the rest:
 AskBot.Host.exe --speak "안녕하세요. 액터 모델로 대답합니다." --out hello.wav
 ```
 
+## Why BLE and not WiFi
+
+WiFi worked - the watch associated four seconds after power-on - and then tore the screen.
+Bringing the station up left ~7 KB of internal DMA heap, and the BSP flushes a PSRAM draw
+buffer of 46.6 KB per transfer, so the LCD could no longer borrow a DMA buffer:
+
+```
+E spi_master: setup_dma_priv_buffer: Failed to allocate priv TX buffer
+E esp_lvgl:bridge_v9: Draw bitmap failed: ESP_ERR_NO_MEM
+```
+
+Raising `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` to 128 KB and pushing WiFi/LWIP buffers into
+PSRAM fixed the failures, but the radio was still paying for itself twice: memory pressure
+plus a second transport on a device whose BLE link was already up for the HUD.
+
+Akka does not need IP - it needs an ordered, reliable byte stream, which BLE already is. The
+device's stream implementation moved from `MakeTcpStream()` to `MakeBleStream()` and nothing
+else changed: not the PDU codec, not the association, not the chat protocol. WiFi remains
+available as a device service in the Settings app, off unless an SSID is configured.
+
 ## Why the actors run on the PC
 
 .NET 10 Native AOT targets Windows / Linux / macOS / iOS / Android on x64, arm64,
@@ -114,9 +141,12 @@ scheme trap, are in [PROTOCOL.md](PROTOCOL.md).
 ## Layout
 
 ```
-host/                        .NET 10 + Akka 1.6 remoting host
+host/                        .NET 10 + Akka 1.6 host for both watch apps
   nuget.config               the Akka nightly feed
-  AskBot.Host/
+  AkkaHost/
+    Ble/BleLink.cs           WinRT BLE central; owns the watch's single link
+    Ble/BleTunnel.cs         0xAB chunks <-> this host's own remoting port
+    Actors/BleChatProxy.cs   the Chat app as an actor: line protocol <-> ChatActor
     AotProps.cs              AOT-safe actor creation
     Program.cs               ActorSystem, remoting, /user/ask + /user/chat
     Actors/AskActor.cs       echo actor (protocol smoke test)
@@ -128,6 +158,8 @@ host/                        .NET 10 + Akka 1.6 remoting host
     Voice/DeviceAudio.cs     44.1k -> 16k resampler, IMA ADPCM, frame builder
     Voice/VoiceSynth.cs      lazy model load, style cache, device-ready frames
     appsettings.json         providers; default is the offline "echo"
+
+pc/ble_akka_bridge.py        standalone BLE->TCP bridge (only needed without AkkaHost)
 
 cpp/                         the module: portable C++17, no ESP-IDF dependency
   include/askbot/
@@ -147,7 +179,8 @@ esp32/                       standalone ESP-IDF project (headless, no UI)
   main/main.cpp              WiFi STA -> associate -> ask every 5s
 
 ../claude_hud_amoled/components/brookesia_app_askbot/   the device app
-  askbot_core.cpp            WiFi + association + client actor + chat state + playback
+  askbot_core.cpp            association + client actor + chat state + speaker playback
+  askbot_ble_stream.cpp      akka::IByteStream over the shared NUS link (0xAB chunks)
   askbot_app.cpp             LVGL UI, same layout language as the Chat app
   Kconfig.projbuild          SSID/password, host IP/port, system names, volume
 ```
@@ -157,14 +190,21 @@ esp32/                       standalone ESP-IDF project (headless, no UI)
 **Host** (from `host/`):
 
 ```powershell
-dotnet run --project AskBot.Host/AskBot.Host.csproj -c Release -- --host <LAN-IP> --port 2552
-# or the AOT binary, after run_test.ps1 -Aot has published it:
-#   AskBot.Host/bin/Release/net10.0/win-x64/publish/AskBot.Host.exe --host <LAN-IP>
+dotnet run --project AkkaHost/AkkaHost.csproj -c Release
 ```
 
-`--host` is the address the host *advertises*; a board cannot reach `127.0.0.1`, so
-pass the LAN IP when talking to hardware. `--provider netclaw` (or `claude`) swaps
-the CLI; the default `echo` needs nothing installed.
+That is all: it listens on `akka.tcp://AskBot@127.0.0.1:2552`, connects to the watch over
+BLE and serves both apps. Useful flags:
+
+| flag | effect |
+|---|---|
+| `--provider netclaw` | use a real chat CLI instead of the offline `echo` loopback |
+| `--announce "…"` | say something to a device as soon as it connects (push notification, and the way to test screen + speaker without touching the watch) |
+| `--no-ble` | skip the BLE central; only network peers reach the host (what `run_test.ps1` uses) |
+| `--device claude-hud` | advertised name to connect to |
+
+`AkkaHost` must be the only process holding the watch's BLE link: `amoled_chat_host`'s
+ChatHost does the same job for the Chat app alone, so run one or the other.
 
 **Device simulator** (from `cpp/`):
 
@@ -182,9 +222,8 @@ existing claude_hud, Chat and Settings apps are untouched.
 
 ## Next steps
 
-1. Flash and use AskBot on the board (needs WiFi credentials) — the speaker path has
-   only been proven against the simulator so far.
-2. Microphone → STT, the other half of Chat parity: mic frames as `0xA5` `byte[]`
-   messages and Whisper on the host (`ggml-small.bin` is already installed next to the
-   SuperTonic bundle).
+1. Microphone → STT, the other half of Chat parity: the `0xA5` frames already arrive at
+   the host, and Whisper `ggml-small.bin` is installed next to the SuperTonic bundle.
+   Wiring it up serves both apps at once, since both share `ChatActor`.
+2. Re-check Native AOT now that WinRT is in the picture (`-p:AkkaHostAot=true`).
 3. An on-screen keyboard (`lv_keyboard`) so questions are not limited to presets.

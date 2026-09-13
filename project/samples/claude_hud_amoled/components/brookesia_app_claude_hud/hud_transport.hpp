@@ -23,7 +23,9 @@ bool bleSendLine(const char *line, size_t len);
 typedef bool (*LineHook)(const char *line, size_t len);
 void setLineHook(LineHook hook);
 
-// Inbound binary writes (first byte 0xA6 = host speech frame). Same task, same rules.
+// Inbound binary writes (first byte 0xA6 = host speech frame, 0xAB = Akka tunnel
+// chunk). Same task, same rules. Several apps may register: hooks are tried in order
+// until one returns true, so each must claim only its own magic.
 typedef bool (*FrameHook)(const uint8_t *data, size_t len);
 void setFrameHook(FrameHook hook);
 

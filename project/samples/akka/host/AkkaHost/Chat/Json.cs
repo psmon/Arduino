@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 
-namespace AskBot.Host.Chat;
+namespace AkkaHost.Chat;
 
 /// <summary>
 /// Tiny JSON writer for the device protocol. Deliberately not

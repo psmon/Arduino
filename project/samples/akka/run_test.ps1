@@ -1,6 +1,9 @@
 # End-to-end check: .NET 10 + Akka 1.6 remoting host <- C++ Akka peer.
 #
 #   pwsh -File run_test.ps1              framework-dependent host (fast build)
+#
+# The host is started with --no-ble: these legs drive it from the PC simulator, and the
+# BLE central would otherwise grab the watch's link away from whatever is using it.
 #   pwsh -File run_test.ps1 -Aot         Native AOT host (single exe, no runtime)
 #
 # Covers three layers: the raw protocol (askbot_cli against /user/ask), the chat
@@ -18,14 +21,15 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$hostProj = 'host/AskBot.Host/AskBot.Host.csproj'
+$hostProj = 'host/AkkaHost/AkkaHost.csproj'
+$tfm = 'net10.0-windows10.0.19041.0'
 $hostExe = if ($Aot) {
-    'host/AskBot.Host/bin/Release/net10.0/win-x64/publish/AskBot.Host.exe'
+    "host/AkkaHost/bin/Release/$tfm/win-x64/publish/AkkaHost.exe"
 } else {
-    'host/AskBot.Host/bin/Release/net10.0/AskBot.Host.exe'
+    "host/AkkaHost/bin/Release/$tfm/AkkaHost.exe"
 }
 
-Get-Process AskBot.Host -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process AkkaHost -ErrorAction SilentlyContinue | Stop-Process -Force
 
 if (-not $SkipBuild) {
     if ($Aot) {
@@ -52,7 +56,7 @@ $log = Join-Path ([System.IO.Path]::GetTempPath()) 'askbot_host.log'
 $emptyIn = Join-Path ([System.IO.Path]::GetTempPath()) 'askbot_stdin.txt'
 Set-Content -Path $emptyIn -Value '' -NoNewline
 $proc = Start-Process -FilePath $hostExe `
-    -ArgumentList @('--host', '127.0.0.1', '--port', "$Port") `
+    -ArgumentList @('--host', '127.0.0.1', '--port', "$Port", '--no-ble') `
     -RedirectStandardOutput $log -RedirectStandardInput $emptyIn `
     -PassThru -WindowStyle Hidden
 

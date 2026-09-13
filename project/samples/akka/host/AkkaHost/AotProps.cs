@@ -1,6 +1,6 @@
 using Akka.Actor;
 
-namespace AskBot.Host;
+namespace AkkaHost;
 
 /// <summary>
 /// AOT-safe actor creation.

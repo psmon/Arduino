@@ -1,5 +1,12 @@
 # Akka.NET classic remoting, as spoken by a C++ peer
 
+> **Transport note.** The device carries these PDUs over **BLE**, not TCP: chunks tagged
+> `0xAB` on the Nordic UART Service, relayed to the host's remoting port by AkkaHost's
+> `BleTunnel` (or `pc/ble_akka_bridge.py`). Everything below is unchanged by that - Akka
+> needs an ordered, reliable byte stream and BLE is one. The framing, handshake and
+> envelope layout are identical whether the bytes arrive over TCP or BLE, which is why the
+> device only swapped `akka::IByteStream` implementations.
+
 Everything here was read out of `akkadotnet/akka.net@dev` (the 1.6 line) and then
 confirmed against a running `AskBot.Host` with the C++ client in `cpp/`.
 

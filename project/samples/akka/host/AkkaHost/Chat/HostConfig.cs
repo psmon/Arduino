@@ -1,7 +1,7 @@
 using System.Text.Json;
-using AskBot.Host.Voice;
+using AkkaHost.Voice;
 
-namespace AskBot.Host.Chat;
+namespace AkkaHost.Chat;
 
 public sealed class ProviderConfig
 {

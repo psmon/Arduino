@@ -124,44 +124,63 @@ Public repo `psmon/Arduino`, default branch `main`, `gh` CLI authenticated. Norm
 
 ## akka / AskBot — the AMOLED board as a peer in a .NET actor system (since 2026-09-13)
 
-`project/samples/akka/` (host + portable C++ client module + a headless ESP-IDF example) and the firmware app
-`claude_hud_amoled/components/brookesia_app_askbot/`. The board joins a .NET 10 + **Akka 1.6 nightly**
-`ActorSystem` over classic remoting and registers a **client actor** at
-`akka.tcp://askbot-device@<ip>:2553/user/chat`, so the host pushes stages and reply chunks to it as ordinary
-actor messages. Same conversation flow as the Chat app; **WiFi TCP, not BLE** — Akka remoting is TCP, so the
-BLE-only rule of the other apps does not apply, and WiFi only starts when AskBot is first opened.
+`project/samples/akka/` = **AkkaHost** (`host/AkkaHost`, .NET 10 + **Akka 1.6 nightly**), the portable C++
+client module (`cpp/`), a standalone ESP-IDF example (`esp32/`) and a fallback BLE bridge (`pc/`). The device
+app is `claude_hud_amoled/components/brookesia_app_askbot/`.
 
-- **Akka.Remote does run under Native AOT**, with two workarounds, both in `host/`: HOCON resolves its
+**One host serves both watch apps over the one BLE link** (a device accepts a single central):
+- AskBot is a real remoting peer. Its PDUs are tunnelled as `0xAB | bytes` chunks over NUS; `Ble/BleTunnel.cs`
+  relays them to the host's own `127.0.0.1:2552` remoting port. The device registers a client actor at
+  `akka.tcp://askbot-device@askbot-ble:2553/user/chat` — the advertised host:port is cosmetic (Akka refuses to
+  serialise an address without one) because `use-passive-connections` keeps the peer answering down the
+  connection the device opened.
+- The Chat app keeps its old line protocol; `Actors/BleChatProxy.cs` is an actor that *is* the Chat app, so both
+  apps share one `ChatActor`, one chat CLI and one SuperTonic voice. **The Chat firmware needed no changes.**
+  Trap already documented in `amoled_chat_host/PROTOCOL.md` and hit anyway: never answer the device's `R hello`
+  with another `H` — it ping-pongs forever (measured 175 ms per lap).
+- `AkkaHost` must be the only process holding the link — `amoled_chat_host`'s ChatHost does the same job for
+  Chat alone, so run one or the other. `--no-ble` skips the central (what `run_test.ps1` uses).
+
+**BLE, not WiFi** (user decision after testing): WiFi worked but tore the screen, and Akka needs an ordered
+byte stream rather than IP. The device's transport swapped from `MakeTcpStream()` to `MakeBleStream()`
+(`askbot_ble_stream.cpp`) and nothing else changed — that `akka::IByteStream` seam is the whole point.
+`hud_ble.cpp` now supports several frame hooks so Chat (0xA6) and AskBot (0xAB) can share the link.
+
+- **Akka.Remote does run under Native AOT**, with two workarounds in `host/`: HOCON resolves
   provider/transport/serializers *by type name*, so the assemblies need `TrimmerRootAssembly` (3.6 MB → 26 MB);
   and `Props.Create<T>()` — including the `() => new T()` lambda form — is `Activator.CreateInstance`, so actors
-  must be created with `Props.CreateBy` + an explicit producer (`AotProps.cs`). `PublishAot` is opt-in
-  (`-p:AskBotAot=true`). Akka 1.6 is nightly-only (nuget.org stable is 1.5.71); `host/nuget.config` adds the feed.
+  must be created with `Props.CreateBy` + an explicit producer (`AotProps.cs`). AOT is opt-in
+  (`-p:AkkaHostAot=true`) and unverified since the BLE central pulled WinRT in. Akka 1.6 is nightly-only
+  (nuget.org stable is 1.5.71); `host/nuget.config` adds the feed.
 - **.NET cannot run on the ESP32-S3** — Native AOT has no Xtensa/bare-metal target, and nanoFramework's nanoCLR
   is an IL interpreter with non-netstandard class libs. Actors stay on the PC; the device speaks the wire protocol.
-- `pwsh -File project/samples/akka/run_test.ps1 [-Aot]` is the whole verification: builds both sides, starts the
-  host, runs the raw protocol (`askbot_cli`) and the full chat flow (`askbot_chat`, offline `echo` provider), and
-  exits non-zero if anything goes unanswered. `cpp/build.ps1 -Test` runs the PDU unit tests.
+- `pwsh -File project/samples/akka/run_test.ps1 [-Aot]` is the PC-side verification: builds both sides, starts
+  the host with `--no-ble`, runs the raw protocol (`askbot_cli`), the chat flow (`askbot_chat`, offline `echo`
+  provider) and a spoken answer decoded back to a WAV. `cpp/build.ps1 -Test` runs the PDU unit tests.
 - Wire facts that bite (handshake carries scheme `tcp` while paths use `akka.tcp`; `seq` must be written as
-  `ulong.MaxValue`; string = serializer 17 / manifest `S`; byte[] = serializer 4) are in
-  `project/samples/akka/PROTOCOL.md` — read it before touching `cpp/src/akka_wire.cpp`.
-- **Spoken answers work**, with **SuperTonic-3** (four ONNX graphs via `Microsoft.ML.OnnxRuntime`; no Python, no
+  `ulong.MaxValue`; string = serializer 17 / manifest `S`; byte[] = serializer 4; audio frames are
+  `0xA6 | id | seq(LE16) | ADPCM block`) are in `project/samples/akka/PROTOCOL.md` — read it before touching
+  `cpp/src/akka_wire.cpp`.
+- **Spoken answers work** with **SuperTonic-3** (four ONNX graphs via `Microsoft.ML.OnnxRuntime`; no Python, no
   COM, so it survives AOT where `System.Speech` cannot). The model is the one AgentZeroLite already installed at
   `%LOCALAPPDATA%\AgentZeroLite\models\supertonic` — **never download it**; absent model = `tts:false` in
-  `hostinfo` and text-only answers. Host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
-  Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message (serializer 4). Quick check:
-  `AskBot.Host.exe --speak "…" --out hello.wav`.
-- **WiFi is a device-wide service owned by the Settings app** (`components/brookesia_app_settings/device_wifi.*`),
-  started at boot, credentials in NVS (`netcfg`) with Kconfig defaults, status shown in the Settings screen. AskBot
-  only calls `device_wifi::waitForIp()`. The radio is **2.4 GHz only** — a 5 GHz SSID never associates.
-- **Two device-side traps, both now fixed in `sdkconfig.defaults`** (verified on hardware 2026-09-13):
-  `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` was 4096, so WiFi's small allocations ate the internal DMA heap down to
-  ~7 KB and the LCD could no longer get a flush buffer (`spi_master: setup_dma_priv_buffer` → `Draw bitmap failed:
-  ESP_ERR_NO_MEM`) — the screen froze mid-redraw and looked like a hang while the actor link was fine. The BSP
-  flushes a PSRAM draw buffer of `buffer_height 50` = 46.6 KB per transfer, so the reserve is now 128 KB. Second
-  trap: app install order is not guaranteed, so `device_wifi::start()` must be serialised — AskBot's link task and
-  the Settings app raced and created the station netif twice, asserting in `esp_netif_create_default_wifi_sta` and
+  `hostinfo` and text-only answers. The host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
+  Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message. Quick check:
+  `AkkaHost.exe --speak "…" --out hello.wav`.
+- **Microphone → STT is not ported**: the `0xA5` frames reach the host but nothing consumes them. Whisper
+  `ggml-small.bin` is installed at `~/.ollama/models/agentzero/whisper` for when it is — and since both apps
+  share `ChatActor`, wiring it once serves both.
+
+### Device-side traps found on hardware (all fixed in `sdkconfig.defaults`)
+
+- `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` was 4096, so WiFi's small allocations ate the internal DMA heap down
+  to ~7 KB and the LCD could no longer get a flush buffer (`spi_master: setup_dma_priv_buffer` → `Draw bitmap
+  failed: ESP_ERR_NO_MEM`). The screen froze mid-redraw and looked exactly like a hang while the actor link was
+  fine. The BSP flushes a PSRAM draw buffer of `buffer_height 50` = 46.6 KB per transfer, so the reserve is now
+  128 KB. Keep that in mind before adding anything else that wants internal DMA memory.
+- App install order is not guaranteed: `device_wifi::start()` must be serialised, or AskBot's link task and the
+  Settings app race and create the station netif twice, asserting in `esp_netif_create_default_wifi_sta` and
   boot-looping the device.
-- `AskBot.Host.exe --announce "…"` makes the host speak to a device as soon as it connects: a push notification,
-  and the way to test the screen and speaker without touching the watch.
-- **Microphone → STT is not ported**: speech input is still the BLE Chat app's job. Whisper `ggml-small.bin` is
-  already installed at `~/.ollama/models/agentzero/whisper` if/when that is wired up.
+- WiFi itself is a device-wide service owned by the Settings app (`brookesia_app_settings/device_wifi.*`),
+  credentials in NVS (`netcfg`), status on the Settings screen, **off while no SSID is set** — which is the
+  normal state now. The radio is 2.4 GHz only; a 5 GHz SSID never associates.

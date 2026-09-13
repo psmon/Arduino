@@ -15,9 +15,9 @@
 #include "freertos/task.h"
 
 #include "akka/remote_client.h"
-#include "akka/transport.h"
+#include "hud_transport.hpp"
 #include "askbot/ima_adpcm.h"
-#include "device_wifi.hpp"
+#include "askbot_ble_stream.hpp"
 
 static const char *TAG = "askbot";
 
@@ -400,20 +400,10 @@ void Core::linkTask()
         bump();
     }
 
-    // WiFi belongs to the device (Settings app starts it at boot), so this only
-    // waits for an address instead of owning the radio.
-    const std::string ip = device_wifi::waitForIp(40000);
-    if (ip.empty()) {
-        const device_wifi::Status wifi = device_wifi::status();
-        std::lock_guard<std::mutex> lock(m_);
-        s_.link = Link::WifiFailed;
-        snprintf(s_.error, sizeof(s_.error), "wifi: %s",
-                 wifi.ssid.empty() ? "not configured" : wifi.ssid.c_str());
-        bump();
-        vTaskDelete(nullptr);
-        return;
-    }
-    ESP_LOGI(TAG, "using ip %s (free internal DMA heap %u B, largest block %u B)", ip.c_str(),
+    // No WiFi: the PDUs ride the BLE link this firmware already keeps up, and a
+    // bridge on the PC relays them to the Akka node. WiFi cost more than it was worth
+    // here - it starved the internal DMA heap and the LCD tore while drawing.
+    ESP_LOGI(TAG, "BLE tunnel mode (free internal DMA heap %u B, largest block %u B)",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 
@@ -422,12 +412,18 @@ void Core::linkTask()
     config.remote.host = CONFIG_ASKBOT_HOST_IP;
     config.remote.port = CONFIG_ASKBOT_HOST_PORT;
     config.local.system = CONFIG_ASKBOT_LOCAL_SYSTEM;
-    config.local.host = ip;
+    // The handshake has to advertise a host:port (Akka refuses to serialise an address
+    // without them) but nothing ever dials it: use_passive_connections keeps the peer
+    // talking back down the connection we opened, which here is the BLE tunnel.
+    config.local.host = CONFIG_ASKBOT_LOCAL_HOST;
     config.local.port = CONFIG_ASKBOT_LOCAL_PORT;
+    // The bridge is on the far side of the link, so a handshake reply crosses BLE twice.
+    config.connect_timeout_ms = 30000;
+    config.handshake_timeout_ms = 15000;
 
     {
         std::lock_guard<std::mutex> lock(m_);
-        snprintf(s_.ip, sizeof(s_.ip), "%s", ip.c_str());
+        snprintf(s_.ip, sizeof(s_.ip), "%s", "BLE");
         bump();
     }
 
@@ -439,7 +435,7 @@ void Core::linkTask()
             bump();
         }
 
-        akka::RemoteClient client(config, akka::MakeTcpStream());
+        akka::RemoteClient client(config, askbot::MakeBleStream());
         client.set_logger([](const char *level, const std::string &message) {
             if (strcmp(level, "error") == 0)      ESP_LOGE(TAG, "%s", message.c_str());
             else if (strcmp(level, "warn") == 0)  ESP_LOGW(TAG, "%s", message.c_str());
@@ -458,8 +454,8 @@ void Core::linkTask()
         if (!client.Connect()) {
             std::lock_guard<std::mutex> lock(m_);
             s_.link = Link::Down;
-            snprintf(s_.error, sizeof(s_.error), "no host at %s:%d", CONFIG_ASKBOT_HOST_IP,
-                     CONFIG_ASKBOT_HOST_PORT);
+            snprintf(s_.error, sizeof(s_.error), "%s",
+                     claude_hud::bleConnected() ? "no bridge on the BLE link" : "waiting for BLE");
             bump();
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;

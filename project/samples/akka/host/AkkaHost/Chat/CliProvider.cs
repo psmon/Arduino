@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace AskBot.Host.Chat;
+namespace AkkaHost.Chat;
 
 /// <summary>
 /// Runs a "chat CLI" as a child process: netclaw, claude, codex, a script. Same

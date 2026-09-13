@@ -19,7 +19,7 @@ using System.Text.RegularExpressions;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
-namespace AskBot.Host.Voice;
+namespace AkkaHost.Voice;
 
 /// <summary>Path convention for the installed SuperTonic-3 bundle.</summary>
 public static class SuperTonicModel

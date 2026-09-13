@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace AskBot.Host.Voice;
+namespace AkkaHost.Voice;
 
 /// <summary>
 /// Turns SuperTonic's 44.1 kHz float output into what the device plays: 16 kHz mono

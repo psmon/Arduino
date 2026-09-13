@@ -15,12 +15,12 @@ set(AKKA_SRCS
     ${AKKA_ROOT}/src/ima_adpcm.cpp
 )
 
-# Borrows the NanumGothic font from brookesia_app_claude_hud; needs WiFi/lwIP, which
-# the BLE-only apps in this firmware do not.
+# Shares the NUS transport and the NanumGothic font with brookesia_app_claude_hud: the
+# Akka PDUs are tunnelled over that BLE link, so this app needs no WiFi either.
 idf_component_register(
     SRCS ${PROJ_SRCS_C} ${PROJ_SRCS_CPP} ${AKKA_SRCS}
     INCLUDE_DIRS ${PROJ_SRC} ${AKKA_ROOT}/include
-    REQUIRES brookesia_core brookesia_app_claude_hud brookesia_app_settings json lwip
+    REQUIRES brookesia_core brookesia_app_claude_hud json bt esp_ringbuf
     WHOLE_ARCHIVE
 )
 

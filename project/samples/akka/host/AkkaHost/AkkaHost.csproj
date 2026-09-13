@@ -2,21 +2,24 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- WinRT (Windows.Devices.Bluetooth) for the BLE central: this host owns the watch's
+         single link so that AskBot's Akka tunnel and the Chat app's line protocol can share it. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>AskBot.Host</RootNamespace>
-    <AssemblyName>AskBot.Host</AssemblyName>
+    <RootNamespace>AkkaHost</RootNamespace>
+    <AssemblyName>AkkaHost</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!-- Akka.Remote is NOT AOT-clean yet (HOCON Type loading, Props expressions,
          Newtonsoft fallback - see akkadotnet/akka.net#7246, open against the 1.6
          milestone). Keep AOT opt-in so `dotnet publish` stays usable while the
-         wire protocol work happens; flip it with -p:AskBotAot=true to collect
+         wire protocol work happens; flip it with -p:AkkaHostAot=true to collect
          the current analyzer/runtime damage report. -->
-    <PublishAot Condition="'$(AskBotAot)' == 'true'">true</PublishAot>
-    <EnableAotAnalyzer Condition="'$(AskBotAot)' == 'true'">true</EnableAotAnalyzer>
-    <EnableTrimAnalyzer Condition="'$(AskBotAot)' == 'true'">true</EnableTrimAnalyzer>
+    <PublishAot Condition="'$(AkkaHostAot)' == 'true'">true</PublishAot>
+    <EnableAotAnalyzer Condition="'$(AkkaHostAot)' == 'true'">true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer Condition="'$(AkkaHostAot)' == 'true'">true</EnableTrimAnalyzer>
   </PropertyGroup>
 
   <ItemGroup>
@@ -40,7 +43,7 @@
          'akka.actor.provider' is not a valid type name
        Rooting the assemblies keeps the metadata that name lookup needs. This is
        the practical workaround while akka.net#7246 is open. -->
-  <ItemGroup Condition="'$(AskBotAot)' == 'true'">
+  <ItemGroup Condition="'$(AkkaHostAot)' == 'true'">
     <TrimmerRootAssembly Include="Akka" />
     <TrimmerRootAssembly Include="Akka.Remote" />
     <TrimmerRootAssembly Include="Newtonsoft.Json" />
