@@ -44,7 +44,36 @@ public sealed class VoiceSynth : IDisposable
     }
 
     public string ModelDirectory => _modelDir;
+
+    /// <summary>The configured default; a request may ask for another.</summary>
     public string VoiceId => _options.Voice;
+
+    /// <summary>The configured default output language.</summary>
+    public string LanguageId => _options.Language;
+
+    /// <summary>
+    /// The voices actually on disk, read from voice_styles/. SuperTonic's styles are speaker
+    /// embeddings extracted from reference audio with no language binding (the model is
+    /// "opensource-multilingual" and the language is a tag around the text), so every voice
+    /// can speak every supported language. The device lists these in its Settings screen.
+    /// </summary>
+    public IReadOnlyList<string> AvailableVoices
+    {
+        get
+        {
+            var dir = Path.Combine(_modelDir, "voice_styles");
+            if (!Directory.Exists(dir)) return Array.Empty<string>();
+            return Directory.EnumerateFiles(dir, "*.json")
+                .Select(Path.GetFileNameWithoutExtension)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .Select(name => name!)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
+    /// <summary>Languages the model accepts; "na" lets it auto-detect from the script.</summary>
+    public static IReadOnlyList<string> AvailableLanguages => SuperTonicLanguages.Available;
 
     public bool Available => _options.Enabled && SuperTonicModel.IsPresent(_modelDir);
 
@@ -59,15 +88,20 @@ public sealed class VoiceSynth : IDisposable
     /// Synthesize and frame. Blocking and CPU-heavy (flow matching over N steps), so
     /// callers run it off the actor thread.
     /// </summary>
-    public Speech Synthesize(string text, int requestId, CancellationToken ct = default)
+    public Speech Synthesize(string text, int requestId, string? voice = null, string? language = null,
+        CancellationToken ct = default)
     {
         if (!Available) throw new InvalidOperationException($"voice unavailable: {Status}");
 
         var synth = EnsureLoaded();
-        var style = Style(_options.Voice);
+        // Per-request overrides come from the device's Settings screen; the configured values
+        // are the fallback.
+        var voiceId = string.IsNullOrWhiteSpace(voice) ? _options.Voice : voice!;
+        var lang = string.IsNullOrWhiteSpace(language) ? _options.Language : language!;
+        var style = Style(voiceId);
         ct.ThrowIfCancellationRequested();
 
-        var samples = synth.Synthesize(text, _options.Language, style,
+        var samples = synth.Synthesize(text, lang, style,
             Math.Clamp(_options.Steps, 5, 12), Math.Clamp(_options.Speed, 0.7f, 2.0f));
 
         var pcm = DeviceAudio.ToPcm16k(samples, synth.SampleRate);

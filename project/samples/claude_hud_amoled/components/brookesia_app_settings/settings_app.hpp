@@ -43,6 +43,9 @@ private:
     static void brightStep(lv_event_t *e);
     static void modeEvent(lv_event_t *e);
     static void testEvent(lv_event_t *e);
+    static void inLangEvent(lv_event_t *e);
+    static void outLangEvent(lv_event_t *e);
+    static void voiceEvent(lv_event_t *e);
 
     lv_timer_t *_timer = nullptr;
     uint32_t    _seen = 0;
@@ -52,6 +55,9 @@ private:
     lv_obj_t *_btnMode = nullptr;
     lv_obj_t *_lblMode = nullptr;
     lv_obj_t *_lblWifi = nullptr;
+    lv_obj_t *_lblIn = nullptr;      // speech input language
+    lv_obj_t *_lblOut = nullptr;     // spoken answer language
+    lv_obj_t *_lblVoice = nullptr;   // spoken answer voice
     lv_obj_t *_lblHint = nullptr;
 
     static Settings *_instance;

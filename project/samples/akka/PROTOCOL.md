@@ -176,7 +176,7 @@ on the wire it is a peer with an address, and the host talks to it as one.
 | `t` | JSON | meaning |
 |---|---|---|
 | `hello` | `{"t":"hello","name":"askbot","fw":"akka-1"}` | sent once per association |
-| `text` | `{"t":"text","id":N,"text":"...","tts":false}` | a question |
+| `text` | `{"t":"text","id":N,"text":"...","tts":false,"outLang":"ko","voice":"F1"}` | a question |
 | `cancel` | `{"t":"cancel","id":N}` | abandon the running answer |
 | `newsession` | `{"t":"newsession","id":N}` | move to a fresh conversation |
 | `ping` | `{"t":"ping"}` | liveness check |
@@ -185,7 +185,7 @@ on the wire it is a peer with an address, and the host talks to it as one.
 
 | `t` / `st` | JSON | meaning |
 |---|---|---|
-| `hostinfo` | `{"t":"hostinfo","host":"PC","provider":"netclaw","tts":false,"chat":1,"v":1}` | answer to `hello` |
+| `hostinfo` | `{"t":"hostinfo","host":"PC","provider":"netclaw","tts":true,"voice":"F1","outLang":"ko","voices":["F1",…],"sttReady":true,"stt":"whisper-small","chat":1,"v":1}` | answer to `hello` |
 | `answer` `think` | `{"t":"answer","st":"think","id":N}` | prompt handed to the chat CLI |
 | `answer` `reply` | `{"t":"answer","st":"reply","id":N,"seq":i,"n":k,"text":"...","done":true}` | answer chunk; `seq` 0 starts a fresh answer, concatenate in order |
 | `answer` `session` | `{"t":"answer","st":"session","id":N,"n":k}` | conversation number changed |
@@ -256,7 +256,34 @@ implementation:
 | host -> device | `think` / `reply` / `speak` … | the normal answer path takes over |
 
 `hostinfo` advertises `"sttReady":true` and the model name, so a device hides its
-microphone when the host cannot transcribe - the same rule as `tts`.
+microphone when the host cannot transcribe - the same rule as `tts`. It also lists the
+voices the host actually has (`voices`), read from `voice_styles/`, so the device's Settings
+screen is not a hardcoded list.
+
+## Voice settings: input and output are separate
+
+Three device-side settings travel **with every request** rather than in a settings message,
+so a change takes effect on the next question and there is no state to keep in sync:
+
+| field | on | meaning |
+|---|---|---|
+| `lang` | `voice` | what language to expect. Telling whisper "ko" beats letting it guess, in both accuracy and time |
+| `outLang` | `text`, `voice` | what language the answer is spoken in |
+| `voice` | `text`, `voice` | which SuperTonic speaker says it |
+
+They are separate because they are separate decisions - asking in Korean and hearing the
+answer in English is a reasonable thing to want. The host falls back to its configured
+defaults for anything a device does not send.
+
+The model's own spec, read from the files rather than assumed: `tts.json` says
+`split: opensource-multilingual`, and each `voice_styles/{id}.json` is a speaker embedding
+extracted from a reference WAV with **no language field**. So all 10 voices × all 31
+languages are valid combinations. Verified by synthesising the same sentence as F1 and M2 in
+Korean (zero-crossing rate 165/s vs 354/s - audibly different speakers) and as F3/M5 in
+English.
+
+The device stores the three values in NVS (`voicecfg`) and cycles them from the Settings
+screen; `C {"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"}` sets them from the host.
 
 The host decodes each ADPCM block straight into one growing buffer (a gap costs one
 block, since each block carries its own predictor), then hands 16 kHz PCM16 to

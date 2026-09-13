@@ -18,6 +18,7 @@
 #include "hud_transport.hpp"
 #include "askbot/ima_adpcm.h"
 #include "askbot_ble_stream.hpp"
+#include "device_voice.hpp"
 
 static const char *TAG = "askbot";
 
@@ -109,11 +110,16 @@ bool Core::sendText(const char *text)
         bump();
     }
 
+    // Output language and voice come from the device-wide Settings screen, the same ones
+    // the Chat app uses - one setting, both apps.
+    const device_voice::Prefs vp = device_voice::get();
     cJSON *js = cJSON_CreateObject();
     cJSON_AddStringToObject(js, "t", "text");
     cJSON_AddNumberToObject(js, "id", id);
     cJSON_AddStringToObject(js, "text", text);
     cJSON_AddBoolToObject(js, "tts", mode() == AnswerMode::TextAndVoice);
+    cJSON_AddStringToObject(js, "outLang", vp.outLang);
+    cJSON_AddStringToObject(js, "voice", vp.voice);
     char *out = cJSON_PrintUnformatted(js);
     const bool ok = out && queueJson(out);
     cJSON_free(out);

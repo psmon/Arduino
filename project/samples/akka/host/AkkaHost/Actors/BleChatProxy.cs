@@ -35,6 +35,8 @@ public sealed class BleChatProxy : UntypedActor
     public sealed record MicFrame(byte[] Data);
     /// <summary>Ask the Chat app to record for a while ("C" remote-control command).</summary>
     public sealed record Talk(int Milliseconds);
+    /// <summary>Any other "C" command, e.g. {"cmd":"mode","voice":true} or {"cmd":"text","text":"…"}.</summary>
+    public sealed record Command(string Json);
 
     public BleChatProxy(BleLink link, IActorRef chat)
     {
@@ -59,6 +61,11 @@ public sealed class BleChatProxy : UntypedActor
             case Talk talk:
                 _log.Info("asking the chat app to record for {0} ms", talk.Milliseconds);
                 _ = _link.SendLineAsync($"C {{\"cmd\":\"talk\",\"ms\":{talk.Milliseconds}}}");
+                break;
+
+            case Command command:
+                _log.Info("sending C {0}", command.Json);
+                _ = _link.SendLineAsync($"C {command.Json}");
                 break;
 
             case MicFrame mic:

@@ -10,6 +10,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "device_wifi.hpp"
+#include "device_voice.hpp"
 #include "bsp/esp-bsp.h"
 #include "settings_app.hpp"
 #include "boot_button.hpp"
@@ -180,6 +181,30 @@ void Settings::modeEvent(lv_event_t *)
 
 void Settings::testEvent(lv_event_t *) { Core::instance().playTestTone(); }
 
+// Three separate settings, because they are three separate decisions: what language the
+// host should expect to hear, what language it should answer in, and which of SuperTonic's
+// ten voices says it. Tapping cycles; there is no keyboard on this panel.
+void Settings::inLangEvent(lv_event_t *e)
+{
+    auto *self = (Settings *)lv_event_get_user_data(e);
+    device_voice::cycleInLang();
+    if (self) self->refresh();
+}
+
+void Settings::outLangEvent(lv_event_t *e)
+{
+    auto *self = (Settings *)lv_event_get_user_data(e);
+    device_voice::cycleOutLang();
+    if (self) self->refresh();
+}
+
+void Settings::voiceEvent(lv_event_t *e)
+{
+    auto *self = (Settings *)lv_event_get_user_data(e);
+    device_voice::cycleVoice();
+    if (self) self->refresh();
+}
+
 // ---------------------------------------------------------------- UI
 static lv_obj_t *mkLabel(lv_obj_t *parent, const char *txt, const lv_font_t *font, uint32_t color)
 {
@@ -244,6 +269,21 @@ Settings::Row Settings::addRow(lv_obj_t *parent, const char *title, const char *
     return r;
 }
 
+// One tappable row that shows "label: value"; the caller keeps the label object and writes
+// the text in refresh().
+static lv_obj_t *mkVoiceRow(lv_obj_t *parent, lv_event_cb_t cb, void *user)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, W_COL - 8, 42);
+    lv_obj_set_style_radius(b, 14, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_DIM), 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user);
+    lv_obj_t *l = mkLabel(b, "", &font_nanum_18, C_WHITE);
+    lv_obj_center(l);
+    return l;
+}
+
 void Settings::buildUi(lv_obj_t *scr)
 {
     lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
@@ -278,6 +318,10 @@ void Settings::buildUi(lv_obj_t *scr)
     lv_obj_add_event_cb(_btnMode, modeEvent, LV_EVENT_CLICKED, nullptr);
     _lblMode = mkLabel(_btnMode, "Answer: text only", &font_nanum_18, C_GRAY);
     lv_obj_center(_lblMode);
+
+    _lblIn = mkVoiceRow(col, inLangEvent, this);
+    _lblOut = mkVoiceRow(col, outLangEvent, this);
+    _lblVoice = mkVoiceRow(col, voiceEvent, this);
 
     lv_obj_t *btnTest = lv_button_create(col);
     lv_obj_set_size(btnTest, W_COL - 8, 46);
@@ -324,6 +368,17 @@ void Settings::refresh()
             break;
         }
         lv_label_set_text(_lblWifi, buf);
+    }
+
+    if (_lblIn && _lblOut && _lblVoice) {
+        const device_voice::Prefs vp = device_voice::get();
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Listen: %s", device_voice::langLabel(vp.inLang));
+        lv_label_set_text(_lblIn, buf);
+        snprintf(buf, sizeof(buf), "Speak: %s", device_voice::langLabel(vp.outLang));
+        lv_label_set_text(_lblOut, buf);
+        snprintf(buf, sizeof(buf), "Voice: %s", vp.voice);
+        lv_label_set_text(_lblVoice, buf);
     }
 
     Core &core = Core::instance();

@@ -53,10 +53,13 @@ public static class Program
                 return 3;
             }
             var outPath = Arg(args, "--out") ?? "speak.wav";
-            var speech = voice.Synthesize(speakText, 0);
+            var speakVoice = Arg(args, "--voice");
+            var speakLang = Arg(args, "--lang");
+            var speech = voice.Synthesize(speakText, 0, speakVoice, speakLang);
             File.WriteAllBytes(outPath, DeviceAudio.ToWav(speech.Pcm16));
             Console.WriteLine($"wrote {outPath}: {speech.DurationMs} ms, {speech.Frames.Count} ADPCM frames " +
-                              $"at {speech.Rate} Hz");
+                              $"at {speech.Rate} Hz, voice {speakVoice ?? voice.VoiceId}, " +
+                              $"lang {speakLang ?? voice.LanguageId}");
             return 0;
         }
 
@@ -89,6 +92,7 @@ public static class Program
         Console.WriteLine($"  /user/chat   conversation actor, shared by AskBot and Chat");
         Console.WriteLine($"providers: {string.Join(", ", config.Providers.Keys)} (default: {config.DefaultProvider})");
         Console.WriteLine($"voice out: {voice.Status}");
+        Console.WriteLine($"  voices:  {string.Join(" ", voice.AvailableVoices)}");
         Console.WriteLine($"voice in:  {stt.Status}");
         if (announce != null) Console.WriteLine($"announce on connect: {announce}");
 
@@ -109,6 +113,23 @@ public static class Program
                 if (frame.Length > 0 && frame[0] == BleTags.MicFrame) proxy.Tell(new BleChatProxy.MicFrame(frame));
             };
             link.Connected += () => proxy.Tell(new BleChatProxy.Greet());
+
+            // Any remote-control command, e.g.
+            //   --cmd "{\"cmd\":\"mode\",\"voice\":true}" --cmd "{\"cmd\":\"text\",\"text\":\"hi\"}"
+            var commands = args.Select((a, i) => (a, i)).Where(x => x.a == "--cmd" && x.i + 1 < args.Length)
+                .Select(x => args[x.i + 1]).ToList();
+            if (commands.Count > 0)
+            {
+                link.Connected += () => _ = Task.Run(async () =>
+                {
+                    await Task.Delay(2500);
+                    foreach (var json in commands)
+                    {
+                        proxy.Tell(new BleChatProxy.Command(json));
+                        await Task.Delay(800);
+                    }
+                });
+            }
 
             // Test aid, and a real capability: the host can start an utterance itself.
             var talkMs = Arg(args, "--talk");

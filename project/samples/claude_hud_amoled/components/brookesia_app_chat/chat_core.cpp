@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "hud_transport.hpp"
+#include "device_voice.hpp"
 
 static const char *TAG = "chat_core";
 
@@ -396,11 +397,14 @@ bool Core::sendText(const char *text)
         s_.stage = Stage::Sending;
         bump();
     }
+    const device_voice::Prefs vp = device_voice::get();
     cJSON *js = cJSON_CreateObject();
     cJSON_AddStringToObject(js, "t", "text");
     cJSON_AddNumberToObject(js, "id", id);
     cJSON_AddStringToObject(js, "text", text);
     cJSON_AddBoolToObject(js, "tts", mode() == AnswerMode::TextAndVoice);
+    cJSON_AddStringToObject(js, "outLang", vp.outLang);
+    cJSON_AddStringToObject(js, "voice", vp.voice);
     char *out = cJSON_PrintUnformatted(js);
     bool ok = out && queueLine(out);
     cJSON_free(out); cJSON_Delete(js);
@@ -521,6 +525,18 @@ bool Core::onLine(const char *line, size_t len)
             if (cJSON_IsNumber(v)) setMicGain(v->valueint); else ok = false;
         } else if (!strcmp(c, "tone")) {
             playTestTone();
+        } else if (!strcmp(c, "voicecfg")) {
+            // {"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"} - any subset. The screen
+            // is the normal way to change these; this exists so a PC can too.
+            const cJSON *in = cJSON_GetObjectItem(js, "in");
+            const cJSON *out = cJSON_GetObjectItem(js, "out");
+            const cJSON *vo = cJSON_GetObjectItem(js, "voice");
+            if (cJSON_IsString(in)) ok &= device_voice::setInLang(in->valuestring);
+            if (cJSON_IsString(out)) ok &= device_voice::setOutLang(out->valuestring);
+            if (cJSON_IsString(vo)) ok &= device_voice::setVoice(vo->valuestring);
+            const device_voice::Prefs vp = device_voice::get();
+            ESP_LOGI(TAG, "voice prefs now in=%s out=%s voice=%s", vp.inLang, vp.outLang, vp.voice);
+            bump();
         } else if (!strcmp(c, "newchat")) {
             newChat();
         } else if (!strcmp(c, "mode")) {
@@ -553,9 +569,15 @@ void Core::captureTask()
         { std::lock_guard<std::mutex> g(m_); id = s_.reqId; }
 
         // header line first; then frames; stop when released, too long, disconnected or the host says busy/err
-        char hdr[96];
-        snprintf(hdr, sizeof(hdr), "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1,\"tts\":%s}",
-                 id, SAMPLE_RATE, mode() == AnswerMode::TextAndVoice ? "true" : "false");
+        // lang tells whisper what to expect (better recognition than letting it guess);
+        // outLang/voice choose how the answer is spoken. Both come from the Settings screen.
+        const device_voice::Prefs vp = device_voice::get();
+        char hdr[192];
+        snprintf(hdr, sizeof(hdr),
+                 "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1,\"tts\":%s,"
+                 "\"lang\":\"%s\",\"outLang\":\"%s\",\"voice\":\"%s\"}",
+                 id, SAMPLE_RATE, mode() == AnswerMode::TextAndVoice ? "true" : "false",
+                 vp.inLang, vp.outLang, vp.voice);
         if (!sendLine(hdr)) { recording_ = false; setStage(Stage::Error, "BLE send failed"); continue; }
 
         AdpcmState st;

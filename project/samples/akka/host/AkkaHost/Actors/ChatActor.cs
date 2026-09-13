@@ -32,6 +32,12 @@ public sealed class ChatActor : UntypedActor
         public int Conversation = 1;
         public int RunningRequest;
         public bool WantsVoice;
+
+        // Output preferences, set per request from the device's Settings screen. Input and
+        // output are deliberately separate: the watch may be spoken to in Korean and answer
+        // in English, and whisper recognises better when it is told which language to expect.
+        public string? OutLanguage;
+        public string? Voice;
         public CancellationTokenSource? Cancel;
 
         // An utterance being captured: microphone frames are decoded straight into this
@@ -50,7 +56,8 @@ public sealed class ChatActor : UntypedActor
     // Local (never serialized) completion messages.
     private sealed record Answered(string Key, int RequestId, string Text, IActorRef Target);
     private sealed record Failed(string Key, int RequestId, string Error, IActorRef Target);
-    private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target);
+    private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target,
+        string Voice, string Language);
     private sealed record SpeechFailed(string Key, int RequestId, string Error, IActorRef Target);
     private sealed record Transcribed(string Key, int RequestId, string Text, IActorRef Target);
     private sealed record TranscribeFailed(string Key, int RequestId, string Error, IActorRef Target);
@@ -168,7 +175,16 @@ public sealed class ChatActor : UntypedActor
                         // The device only offers the voice toggle when the host can
                         // actually speak, same rule as the BLE app.
                         writer.WriteBoolean("tts", _voice?.Available == true);
-                        if (_voice?.Available == true) writer.WriteString("voice", _voice.VoiceId);
+                        if (_voice?.Available == true)
+                        {
+                            writer.WriteString("voice", _voice.VoiceId);
+                            writer.WriteString("outLang", _voice.LanguageId);
+                            // The Settings screen lists what the host actually has rather than a
+                            // hardcoded set: SuperTonic's voices are whatever is in voice_styles/.
+                            writer.WriteStartArray("voices");
+                            foreach (var id in _voice.AvailableVoices) writer.WriteStringValue(id);
+                            writer.WriteEndArray();
+                        }
                         // The Chat app shows the microphone as unavailable when the host
                         // cannot transcribe, rather than recording into a void.
                         writer.WriteBoolean("sttReady", _stt?.Available == true);
@@ -192,6 +208,7 @@ public sealed class ChatActor : UntypedActor
                         : "";
                     device.WantsVoice = root.TryGetProperty("tts", out var tts) &&
                                         tts.ValueKind == JsonValueKind.True;
+                    ReadOutputPrefs(device, root);
                     StartRequest(key, device, id, prompt, sender);
                     break;
 
@@ -317,15 +334,19 @@ public sealed class ChatActor : UntypedActor
         var voice = _voice!;
         var cancel = device.Cancel;
         var self = Self;
+        var voiceId = device.Voice;
+        var language = device.OutLanguage;
 
         _ = Task.Run(() =>
         {
             var sw = Stopwatch.StartNew();
             try
             {
-                var speech = voice.Synthesize(text, requestId, cancel?.Token ?? CancellationToken.None);
+                var speech = voice.Synthesize(text, requestId, voiceId, language,
+                    cancel?.Token ?? CancellationToken.None);
                 if (cancel?.IsCancellationRequested != true)
-                    self.Tell(new SpeechReady(key, requestId, speech, sw.ElapsedMilliseconds, target));
+                    self.Tell(new SpeechReady(key, requestId, speech, sw.ElapsedMilliseconds, target,
+                        voiceId ?? voice.VoiceId, language ?? voice.LanguageId));
             }
             catch (OperationCanceledException)
             {
@@ -368,8 +389,9 @@ public sealed class ChatActor : UntypedActor
             writer.WriteNumber("id", ready.RequestId);
         }));
 
-        _log.Info("spoke #{0}: {1} ms of audio in {2} frames, synthesized in {3} ms",
-            ready.RequestId, speech.DurationMs, speech.Frames.Count, ready.ElapsedMs);
+        _log.Info("spoke #{0} as {1}/{2}: {3} ms of audio in {4} frames, synthesized in {5} ms",
+            ready.RequestId, ready.Voice, ready.Language, speech.DurationMs, speech.Frames.Count,
+            ready.ElapsedMs);
     }
 
     // ---------------------------------------------------------------- voice input
@@ -398,9 +420,24 @@ public sealed class ChatActor : UntypedActor
             ? lang.GetString()
             : null;
         device.WantsVoice = root.TryGetProperty("tts", out var tts) && tts.ValueKind == JsonValueKind.True;
+        ReadOutputPrefs(device, root);
 
-        _log.Info("capture #{0} started ({1})", id, device.CaptureLanguage ?? "auto");
+        _log.Info("capture #{0} started (in {1}, out {2}/{3})", id, device.CaptureLanguage ?? "auto",
+            device.OutLanguage ?? _voice?.LanguageId ?? "-", device.Voice ?? _voice?.VoiceId ?? "-");
         Tell(target, Stage("rec", id));
+    }
+
+    /// <summary>
+    /// "outLang" and "voice" travel with every request rather than in a separate settings
+    /// message: the device owns these settings, and carrying them per request means a changed
+    /// setting takes effect on the next question with no state to keep in sync.
+    /// </summary>
+    private static void ReadOutputPrefs(Device device, JsonElement root)
+    {
+        if (root.TryGetProperty("outLang", out var outLang) && outLang.ValueKind == JsonValueKind.String)
+            device.OutLanguage = outLang.GetString();
+        if (root.TryGetProperty("voice", out var voice) && voice.ValueKind == JsonValueKind.String)
+            device.Voice = voice.GetString();
     }
 
     private void MicFrame(byte[] frame)

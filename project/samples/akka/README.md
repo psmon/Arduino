@@ -30,6 +30,7 @@ Neither firmware app needed changing for that, and there is no WiFi anywhere in 
 | On the watch: AskBot associates and speaks | **verified on hardware** over BLE, no WiFi |
 | On the watch: the Chat app served by the same actors | **verified on hardware** (same answer, same voice) |
 | Microphone → STT (Whisper) | **verified on hardware** through the Chat app's mic; AskBot has no mic button yet |
+| Voice settings on the watch (listen / speak / voice) | **verified on hardware**: `spoke #1 as M2/en` |
 
 ```powershell
 pwsh -File project/samples/akka/run_test.ps1        # framework-dependent host
@@ -125,6 +126,32 @@ Two findings worth keeping:
 
 `AkkaHost.exe --talk 4000` asks the watch to record for four seconds on connect - how this
 was tested without touching the device.
+
+## Voice settings
+
+Three settings live on the watch (Settings screen, stored in NVS) and travel with every
+request, so a change applies to the next question:
+
+- **Listen** — `auto` / `한국어` / `English`. A hint to whisper; pinning it beats auto-detect
+  on both accuracy and time.
+- **Speak** — `한국어` / `English`. What language the answer is spoken in.
+- **Voice** — one of SuperTonic's ten speakers (F1-F5, M1-M5).
+
+Input and output are separate on purpose: asking in Korean and hearing English back is a
+reasonable thing to want.
+
+What the model actually supports, read from its own files rather than assumed: `tts.json`
+says `split: opensource-multilingual`, and each `voice_styles/{id}.json` is a speaker
+embedding extracted from a reference WAV with no language field - so **any of the 10 voices
+can speak any of the 31 languages**. Checked by ear and by measurement: the same Korean
+sentence as F1 vs M2 gives zero-crossing rates of 165/s vs 354/s, and F3/M5 both render
+English fine. The host enumerates `voice_styles/` and reports the list in `hostinfo`, so the
+watch is not carrying a hardcoded copy.
+
+```powershell
+AkkaHost.exe --speak "Hello" --voice M2 --lang en --out m2.wav   # try a combination
+AkkaHost.exe --cmd '{"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"}'   # set from the PC
+```
 
 ## Why BLE and not WiFi
 
@@ -223,6 +250,8 @@ BLE and serves both apps. Useful flags:
 | `--provider netclaw` | use a real chat CLI instead of the offline `echo` loopback |
 | `--announce "…"` | say something to a device as soon as it connects (push notification, and the way to test screen + speaker without touching the watch) |
 | `--talk 4000` | ask the Chat app to record for 4 s on connect (tests the microphone path) |
+| `--cmd '{"cmd":…}'` | send a remote-control command on connect; repeatable |
+| `--speak … --voice M2 --lang en` | synthesize one sentence to a WAV and exit |
 | `--no-ble` | skip the BLE central; only network peers reach the host (what `run_test.ps1` uses) |
 | `--device claude-hud` | advertised name to connect to |
 

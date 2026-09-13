@@ -177,6 +177,16 @@ byte stream rather than IP. The device's transport swapped from `MakeTcpStream()
   rms −58.9 dBFS, so `Stt.SilencePeakDb`/`SilenceRmsDb` reject it as "no speech detected".
   `AkkaHost.exe --talk 4000` asks the Chat app to record for 4 s on connect — how to test the mic path without
   touching the watch.
+- **Voice settings are device-side and split in two**: `components/brookesia_app_claude_hud/device_voice.*`
+  (that component, not Settings, because Settings already depends on chat — putting it there would be a cycle)
+  stores *listen language* / *speak language* / *voice* in NVS (`voicecfg`), the Settings screen cycles them, and
+  they travel **with every request** (`lang`, `outLang`, `voice`) so a change applies to the next question with no
+  state to sync. `C {"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"}` sets them from the host; verified on
+  hardware (`capture #2 started (in ko, out en/M2)` → `spoke #1 as M2/en`).
+- **SuperTonic's spec, read from the model files**: `tts.json` says `split: opensource-multilingual` and each
+  `voice_styles/{id}.json` is a speaker embedding with no language field — so all **10 voices × 31 languages**
+  combine freely. The host enumerates `voice_styles/` and reports the list in `hostinfo`, so the device does not
+  carry a hardcoded copy. `AkkaHost.exe --speak "…" --voice M2 --lang en` tries one combination.
 - **AskBot's own mic is the remaining gap**: `brookesia_app_chat`'s core owns the `esp_codec_dev` microphone
   handle, so a second app cannot open it. That needs the codec to become a shared device service the way WiFi
   did (`device_wifi`), not a copy of the capture code.
