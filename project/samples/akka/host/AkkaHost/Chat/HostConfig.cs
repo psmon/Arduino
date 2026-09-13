@@ -34,6 +34,8 @@ public sealed class HostConfig
     public Dictionary<string, ProviderConfig> Providers { get; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Bound from the "Voice" section; defaults point at the installed SuperTonic bundle.</summary>
     public VoiceOptions Voice { get; private set; } = new();
+    /// <summary>Bound from the "Stt" section; defaults point at the installed Whisper models.</summary>
+    public SttOptions Stt { get; private set; } = new();
 
     public bool TrySetDefaultProvider(string name)
     {
@@ -72,6 +74,9 @@ public sealed class HostConfig
         if (document.RootElement.TryGetProperty("Voice", out var voice) && voice.ValueKind == JsonValueKind.Object)
             config.Voice = ReadVoice(voice);
 
+        if (document.RootElement.TryGetProperty("Stt", out var stt) && stt.ValueKind == JsonValueKind.Object)
+            config.Stt = ReadStt(stt);
+
         if (chat.TryGetProperty("Providers", out var providers) && providers.ValueKind == JsonValueKind.Object)
         {
             foreach (var entry in providers.EnumerateObject())
@@ -89,6 +94,23 @@ public sealed class HostConfig
         Language = Str(element, "Language") ?? "ko",
         Steps = element.TryGetProperty("Steps", out var steps) && steps.TryGetInt32(out var stepValue) ? stepValue : 8,
         Speed = element.TryGetProperty("Speed", out var speed) && speed.TryGetSingle(out var speedValue) ? speedValue : 1.05f,
+    };
+
+    private static SttOptions ReadStt(JsonElement element) => new()
+    {
+        Enabled = !element.TryGetProperty("Enabled", out var enabled) || enabled.ValueKind != JsonValueKind.False,
+        Model = Str(element, "Model") ?? "small",
+        ModelDir = Str(element, "ModelDir") ?? "",
+        Language = Str(element, "Language") ?? "auto",
+        Preload = !element.TryGetProperty("Preload", out var preload) || preload.ValueKind != JsonValueKind.False,
+        MaxSeconds = element.TryGetProperty("MaxSeconds", out var max) && max.TryGetInt32(out var maxValue) ? maxValue : 60,
+        Threads = element.TryGetProperty("Threads", out var th) && th.TryGetInt32(out var thValue) ? thValue : 0,
+        SilencePeakDb = element.TryGetProperty("SilencePeakDb", out var sp) && sp.TryGetDouble(out var spValue)
+            ? spValue
+            : -45,
+        SilenceRmsDb = element.TryGetProperty("SilenceRmsDb", out var sr) && sr.TryGetDouble(out var srValue)
+            ? srValue
+            : -50,
     };
 
     private static ProviderConfig ReadProvider(JsonElement element) => new()

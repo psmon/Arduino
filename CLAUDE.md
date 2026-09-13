@@ -167,9 +167,19 @@ byte stream rather than IP. The device's transport swapped from `MakeTcpStream()
   `hostinfo` and text-only answers. The host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
   Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message. Quick check:
   `AkkaHost.exe --speak "…" --out hello.wav`.
-- **Microphone → STT is not ported**: the `0xA5` frames reach the host but nothing consumes them. Whisper
-  `ggml-small.bin` is installed at `~/.ollama/models/agentzero/whisper` for when it is — and since both apps
-  share `ChatActor`, wiring it once serves both.
+- **Microphone → STT works** (Chat app's mic; AskBot has no mic button yet). `voice` / `0xA5` frames / `end` →
+  ADPCM decode into one buffer → **whisper.cpp** via Whisper.net using the installed
+  `~/.ollama/models/agentzero/whisper/ggml-small.bin` (**never download**). Two numbers that matter, both
+  measured here: whisper's default thread count made a 4.1 s capture take **25.6 s**; pinned to
+  `ProcessorCount - 1` threads with the language fixed instead of auto-detected it is **2.3 s** cold, **0.24 s**
+  warm. And a **silence gate is mandatory** — on a quiet capture whisper invents text (`[구독 / 좋아요]`,
+  `[감사합니다]`) which the watch would then send to the LLM; a quiet room on this board is peak −46.8 dBFS /
+  rms −58.9 dBFS, so `Stt.SilencePeakDb`/`SilenceRmsDb` reject it as "no speech detected".
+  `AkkaHost.exe --talk 4000` asks the Chat app to record for 4 s on connect — how to test the mic path without
+  touching the watch.
+- **AskBot's own mic is the remaining gap**: `brookesia_app_chat`'s core owns the `esp_codec_dev` microphone
+  handle, so a second app cannot open it. That needs the codec to become a shared device service the way WiFi
+  did (`device_wifi`), not a copy of the capture code.
 
 ### Device-side traps found on hardware (all fixed in `sdkconfig.defaults`)
 

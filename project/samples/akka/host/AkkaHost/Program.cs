@@ -40,6 +40,7 @@ public static class Program
 
         using var voice = new VoiceSynth(config.Voice,
             (level, message) => Console.WriteLine($"[voice/{level}] {message}"));
+        using var stt = new Stt(config.Stt, (level, message) => Console.WriteLine($"[stt/{level}] {message}"));
 
         // Quick standalone check of the speech path: synthesize to a WAV and exit.
         //   AkkaHost.exe --speak "안녕하세요" --out out.wav
@@ -80,13 +81,15 @@ public static class Program
         // Native AOT binary.
         var ask = system.ActorOf(AotProps.Of(() => new AskActor()), "ask");
         var announce = Arg(args, "--announce");
-        var chat = system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce)), "chat");
+        var chat = system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce, stt)), "chat");
+        stt.Preload();
 
         Console.WriteLine($"AkkaHost up as akka.tcp://{sysName}@{advertise}:{port}");
         Console.WriteLine($"  /user/ask    echo actor (protocol smoke test)");
         Console.WriteLine($"  /user/chat   conversation actor, shared by AskBot and Chat");
         Console.WriteLine($"providers: {string.Join(", ", config.Providers.Keys)} (default: {config.DefaultProvider})");
-        Console.WriteLine($"voice: {voice.Status}");
+        Console.WriteLine($"voice out: {voice.Status}");
+        Console.WriteLine($"voice in:  {stt.Status}");
         if (announce != null) Console.WriteLine($"announce on connect: {announce}");
 
         BleLink? link = null;
@@ -99,7 +102,24 @@ public static class Program
 
             var proxy = system.ActorOf(AotProps.Of(() => new BleChatProxy(link, chat)), "ble-chat");
             link.LineReceived += line => proxy.Tell(new BleChatProxy.Line(line));
+            // 0xA5 microphone frames belong to the Chat app; 0xAB tunnel chunks are the
+            // BleTunnel's and are already claimed there.
+            link.FrameReceived += frame =>
+            {
+                if (frame.Length > 0 && frame[0] == BleTags.MicFrame) proxy.Tell(new BleChatProxy.MicFrame(frame));
+            };
             link.Connected += () => proxy.Tell(new BleChatProxy.Greet());
+
+            // Test aid, and a real capability: the host can start an utterance itself.
+            var talkMs = Arg(args, "--talk");
+            if (talkMs != null && int.TryParse(talkMs, out var ms))
+            {
+                link.Connected += () => _ = Task.Run(async () =>
+                {
+                    await Task.Delay(2500);   // let the greeting settle first
+                    proxy.Tell(new BleChatProxy.Talk(ms));
+                });
+            }
 
             _ = Task.Run(() => KeepLinkUpAsync(link, deviceName));
             Console.WriteLine($"BLE: keeping a link to '{deviceName}' (AskBot tunnel + Chat protocol)");

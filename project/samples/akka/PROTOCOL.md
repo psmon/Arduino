@@ -239,8 +239,41 @@ Measured: ~4 s of CPU for ~20 s of Korean audio at 8 denoising steps, plus ~0.9 
 one-time model load. It runs inside the Native AOT binary too, which Windows
 `System.Speech` cannot.
 
-## Microphone, when it arrives
+## Microphone and speech recognition
 
-Speech *input* is still the BLE Chat app's job. The shape is already fixed by the
-frames above: microphone audio travels the same way in the other direction, magic
-`0xA5`, and `ChatActor` already recognises inbound `byte[]`.
+Speech *input* works, through the Chat app's microphone (AskBot has no mic UI of its own
+yet - see below). Both apps are served by the same `ChatActor`, so the flow is one
+implementation:
+
+| direction | message | meaning |
+|---|---|---|
+| device -> host | `{"t":"voice","id":N,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false}` | an utterance starts |
+| device -> host | `0xA5 \| id(1) \| seq(2 LE) \| ADPCM block` | 30-60 ms of microphone audio each |
+| device -> host | `{"t":"end","id":N}` | utterance finished |
+| host -> device | `{"t":"answer","st":"rec","id":N}` | capture accepted |
+| host -> device | `{"t":"answer","st":"stt","id":N}` | transcribing (no `text` yet) |
+| host -> device | `{"t":"answer","st":"stt","id":N,"text":"…"}` | what the host heard |
+| host -> device | `think` / `reply` / `speak` … | the normal answer path takes over |
+
+`hostinfo` advertises `"sttReady":true` and the model name, so a device hides its
+microphone when the host cannot transcribe - the same rule as `tts`.
+
+The host decodes each ADPCM block straight into one growing buffer (a gap costs one
+block, since each block carries its own predictor), then hands 16 kHz PCM16 to
+**whisper.cpp** via Whisper.net. The model is the `ggml-small.bin` AgentZeroLite already
+installed; nothing is downloaded.
+
+Two things that decide whether this is usable:
+
+- **Threads.** whisper.cpp with the default thread count took **25.6 s** for a 4.1 s
+  capture on this machine. With `Environment.ProcessorCount - 1` (31 here) and the
+  language pinned instead of auto-detected, the same capture takes **2.3 s**, and 0.24 s
+  once the model is warm.
+- **A silence gate.** Left to itself on a quiet capture, whisper invents text - `[구독 /
+  좋아요]`, `[감사합니다]`, YouTube boilerplate from its training data - and the watch
+  would then ask the LLM about it. A quiet room on this board measures peak -46.8 dBFS,
+  rms -58.9 dBFS at the default 30 dB mic gain, so captures below `SilencePeakDb` /
+  `SilenceRmsDb` never reach the model and come back as `no speech detected`.
+
+`AkkaHost.exe --talk 4000` asks the Chat app to record for four seconds as soon as it
+connects: the way to exercise this path without touching the watch.

@@ -24,6 +24,7 @@ public sealed class ChatActor : UntypedActor
     private readonly Dictionary<string, CliProvider> _providers;
 
     private readonly VoiceSynth? _voice;
+    private readonly Stt? _stt;
 
     // Per-device state, keyed by the sender's address (one entry per board).
     private sealed class Device
@@ -32,6 +33,16 @@ public sealed class ChatActor : UntypedActor
         public int RunningRequest;
         public bool WantsVoice;
         public CancellationTokenSource? Cancel;
+
+        // An utterance being captured: microphone frames are decoded straight into this
+        // buffer as they arrive, so a 30 s capture costs one 960 KB stream and no
+        // per-frame allocations.
+        public int CaptureId = -1;
+        public MemoryStream? Capture;
+        public string? CaptureLanguage;
+        public int CaptureFrames;
+        public int CaptureGaps;
+        public int LastSeq = -1;
     }
 
     private readonly Dictionary<string, Device> _devices = new(StringComparer.Ordinal);
@@ -41,6 +52,8 @@ public sealed class ChatActor : UntypedActor
     private sealed record Failed(string Key, int RequestId, string Error, IActorRef Target);
     private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target);
     private sealed record SpeechFailed(string Key, int RequestId, string Error, IActorRef Target);
+    private sealed record Transcribed(string Key, int RequestId, string Text, IActorRef Target);
+    private sealed record TranscribeFailed(string Key, int RequestId, string Error, IActorRef Target);
 
     /// <summary>
     /// Optional text the host says to a device as soon as it connects: a push
@@ -49,10 +62,11 @@ public sealed class ChatActor : UntypedActor
     /// </summary>
     private readonly string? _announce;
 
-    public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null)
+    public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null, Stt? stt = null)
     {
         _config = config;
         _voice = voice;
+        _stt = stt;
         _announce = string.IsNullOrWhiteSpace(announce) ? null : announce.Trim();
         _providers = new Dictionary<string, CliProvider>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, provider) in config.Providers)
@@ -98,12 +112,17 @@ public sealed class ChatActor : UntypedActor
                 }));
                 break;
 
-            // Audio frames will arrive here once voice is wired up; acknowledge the
-            // shape now so a stray frame is a log line rather than an unhandled
-            // message that Akka reports as a dead letter.
             case byte[] frame:
-                _log.Debug("audio frame of {0} bytes from {1} (voice path not implemented yet)",
-                    frame.Length, Sender.Path);
+                MicFrame(frame);
+                break;
+
+            case Transcribed done:
+                Heard(done);
+                break;
+
+            case TranscribeFailed failed:
+                _log.Warning("stt #{0} failed: {1}", failed.RequestId, failed.Error);
+                Tell(failed.Target, Stage("err", failed.RequestId, text: failed.Error));
                 break;
 
             default:
@@ -150,6 +169,10 @@ public sealed class ChatActor : UntypedActor
                         // actually speak, same rule as the BLE app.
                         writer.WriteBoolean("tts", _voice?.Available == true);
                         if (_voice?.Available == true) writer.WriteString("voice", _voice.VoiceId);
+                        // The Chat app shows the microphone as unavailable when the host
+                        // cannot transcribe, rather than recording into a void.
+                        writer.WriteBoolean("sttReady", _stt?.Available == true);
+                        if (_stt?.Available == true) writer.WriteString("stt", _stt.ProviderName);
                         writer.WriteNumber("chat", device.Conversation);
                         writer.WriteNumber("v", 1);
                     }));
@@ -172,11 +195,20 @@ public sealed class ChatActor : UntypedActor
                     StartRequest(key, device, id, prompt, sender);
                     break;
 
+                case "voice":
+                    BeginCapture(device, id, root, sender);
+                    break;
+
+                case "end":
+                    EndCapture(key, device, id, sender);
+                    break;
+
                 case "cancel":
                     // Newest-question-wins is the rule the BLE host settled on: a
                     // cancel abandons the answer rather than refusing the next one.
                     device.Cancel?.Cancel();
                     device.RunningRequest = 0;
+                    DropCapture(device);
                     Tell(sender, Stage("idle", id));
                     break;
 
@@ -338,6 +370,143 @@ public sealed class ChatActor : UntypedActor
 
         _log.Info("spoke #{0}: {1} ms of audio in {2} frames, synthesized in {3} ms",
             ready.RequestId, speech.DurationMs, speech.Frames.Count, ready.ElapsedMs);
+    }
+
+    // ---------------------------------------------------------------- voice input
+
+    /// <summary>
+    /// "voice" opens a capture. Frames that follow carry the same id; "end" closes it. The
+    /// device keeps recording while the user holds the button, so this can run for tens of
+    /// seconds and must not buffer per frame.
+    /// </summary>
+    private void BeginCapture(Device device, int id, JsonElement root, IActorRef target)
+    {
+        if (_stt?.Available != true)
+        {
+            Tell(target, Stage("err", id, text: "no speech recognition on this host"));
+            return;
+        }
+
+        device.Cancel?.Cancel();          // newest utterance wins, same rule as text
+        device.CaptureId = id;
+        device.Capture = new MemoryStream(16000 * 2 * 8);   // 8 s before it grows
+        device.CaptureFrames = 0;
+        device.CaptureGaps = 0;
+        device.LastSeq = -1;
+        device.CaptureLanguage = root.TryGetProperty("lang", out var lang) &&
+                                 lang.ValueKind == JsonValueKind.String
+            ? lang.GetString()
+            : null;
+        device.WantsVoice = root.TryGetProperty("tts", out var tts) && tts.ValueKind == JsonValueKind.True;
+
+        _log.Info("capture #{0} started ({1})", id, device.CaptureLanguage ?? "auto");
+        Tell(target, Stage("rec", id));
+    }
+
+    private void MicFrame(byte[] frame)
+    {
+        var key = Sender.Path.Address.ToString();
+        var device = GetDevice(key);
+
+        if (!DeviceAudio.TryParseFrame(frame, DeviceAudio.MicMagic, out var id, out var seq, out var block))
+        {
+            _log.Debug("{0} byte frame from {1} is not microphone audio", frame.Length, Sender.Path);
+            return;
+        }
+        if (device.Capture is null || device.CaptureId != id) return;   // a capture that was abandoned
+
+        // One lost frame is one lost ADPCM block, not a desync - the block header carries
+        // its own predictor - so a gap is worth counting and no more.
+        if (device.LastSeq >= 0 && seq != ((device.LastSeq + 1) & 0xFFFF)) device.CaptureGaps++;
+        device.LastSeq = seq;
+
+        ImaAdpcm.DecodeBlock(block.Span, device.Capture);
+        device.CaptureFrames++;
+    }
+
+    private void EndCapture(string key, Device device, int id, IActorRef target)
+    {
+        var capture = device.Capture;
+        if (capture is null || device.CaptureId != id)
+        {
+            Tell(target, Stage("idle", id));
+            return;
+        }
+
+        var pcm = capture.ToArray();
+        var language = device.CaptureLanguage;
+        DropCapture(device);
+
+        var seconds = pcm.Length / 32000.0;
+        var (peakDb, rmsDb) = Stt.Levels(pcm);
+        _log.Info("capture #{0} ended: {1:F1} s, {2} frames, {3} gaps, peak {4:F1} dBFS, rms {5:F1} dBFS",
+            id, seconds, device.CaptureFrames, device.CaptureGaps, peakDb, rmsDb);
+
+        if (pcm.Length < 3200)
+        {
+            Tell(target, Stage("err", id, text: "nothing recorded"));
+            return;
+        }
+
+        Tell(target, Stage("stt", id));   // no text yet: "transcribing"
+
+        var cancel = new CancellationTokenSource();
+        device.Cancel = cancel;
+        device.RunningRequest = id;
+        var stt = _stt!;
+        var self = Self;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var text = await stt.TranscribeAsync(pcm, language, cancel.Token);
+                if (!cancel.IsCancellationRequested) self.Tell(new Transcribed(key, id, text, target));
+            }
+            catch (OperationCanceledException)
+            {
+                // superseded
+            }
+            catch (Exception ex)
+            {
+                if (!cancel.IsCancellationRequested) self.Tell(new TranscribeFailed(key, id, ex.Message, target));
+            }
+        }, cancel.Token);
+    }
+
+    /// <summary>
+    /// The transcript goes back to the device first - seeing what the host heard is half the
+    /// value when it mis-hears - and then straight into the same request path a typed
+    /// question takes.
+    /// </summary>
+    private void Heard(Transcribed done)
+    {
+        var device = GetDevice(done.Key);
+        if (device.RunningRequest != done.RequestId) return;   // a newer utterance won
+
+        Tell(done.Target, Json.Write(writer =>
+        {
+            writer.WriteString("t", "answer");
+            writer.WriteString("st", "stt");
+            writer.WriteNumber("id", done.RequestId);
+            writer.WriteString("text", done.Text);
+        }));
+
+        if (done.Text.Length == 0)
+        {
+            device.RunningRequest = 0;
+            Tell(done.Target, Stage("err", done.RequestId, text: "no speech detected"));
+            return;
+        }
+
+        StartRequest(done.Key, device, done.RequestId, done.Text, done.Target);
+    }
+
+    private static void DropCapture(Device device)
+    {
+        device.Capture?.Dispose();
+        device.Capture = null;
+        device.CaptureId = -1;
     }
 
     private static string Stage(string stage, int id, string? text = null) => Json.Write(writer =>

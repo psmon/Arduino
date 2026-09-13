@@ -21,8 +21,10 @@ public static class DeviceAudio
     /// <summary>Samples per ADPCM block. 960 keeps one block at 484 bytes.</summary>
     public const int SamplesPerBlock = 960;
 
-    /// <summary>host -> device speech frame magic (device -> host microphone is 0xA5).</summary>
+    /// <summary>host -> device speech frame magic.</summary>
     public const byte SpeechMagic = 0xA6;
+    /// <summary>device -> host microphone frame magic.</summary>
+    public const byte MicMagic = 0xA5;
 
     /// <summary>
     /// Resample float PCM in [-1,1] to 16 kHz PCM16. Windowed-sinc interpolation with
@@ -101,6 +103,20 @@ public static class DeviceAudio
         return frame;
     }
 
+    /// <summary>Splits an inbound frame: magic | id(1) | seq(2 LE) | block.</summary>
+    public static bool TryParseFrame(byte[] frame, byte magic, out int id, out int seq,
+        out ReadOnlyMemory<byte> block)
+    {
+        id = 0;
+        seq = 0;
+        block = default;
+        if (frame.Length < 5 || frame[0] != magic) return false;
+        id = frame[1];
+        seq = frame[2] | (frame[3] << 8);
+        block = new ReadOnlyMemory<byte>(frame, 4, frame.Length - 4);
+        return true;
+    }
+
     /// <summary>Milliseconds of audio in a 16 kHz mono PCM16 buffer.</summary>
     public static int DurationMs(byte[] pcm16) => (int)(pcm16.Length / 2.0 / TargetRate * 1000);
 
@@ -163,6 +179,41 @@ public static class ImaAdpcm
             blocks.Add(EncodeBlock(shorts.AsSpan(offset, n), ref predictor, ref index));
         }
         return blocks;
+    }
+
+    /// <summary>
+    /// Decodes one self-contained block, appending PCM16 to <paramref name="pcm"/>. The
+    /// mirror of <see cref="EncodeBlock"/>; the device's encoder is the one in
+    /// brookesia_app_chat, and the block header is what makes a lost frame cost 60 ms
+    /// instead of the rest of the utterance.
+    /// </summary>
+    public static void DecodeBlock(ReadOnlySpan<byte> block, Stream pcmOut)
+    {
+        if (block.Length < 5) return;
+
+        var predictor = (short)(block[0] | (block[1] << 8));
+        var index = Math.Clamp((int)block[2], 0, 88);
+
+        for (var i = 4; i < block.Length; i++)
+        {
+            for (var half = 0; half < 2; half++)
+            {
+                var nibble = half == 0 ? block[i] & 0x0F : (block[i] >> 4) & 0x0F;
+                var step = StepTable[index];
+
+                var delta = step >> 3;
+                if ((nibble & 4) != 0) delta += step;
+                if ((nibble & 2) != 0) delta += step >> 1;
+                if ((nibble & 1) != 0) delta += step >> 2;
+
+                var next = (nibble & 8) != 0 ? predictor - delta : predictor + delta;
+                predictor = (short)Math.Clamp(next, short.MinValue, short.MaxValue);
+                index = Math.Clamp(index + IndexTable[nibble], 0, 88);
+
+                pcmOut.WriteByte((byte)predictor);
+                pcmOut.WriteByte((byte)((ushort)predictor >> 8));
+            }
+        }
     }
 
     public static byte[] EncodeBlock(ReadOnlySpan<short> samples, ref int predictor, ref int index)

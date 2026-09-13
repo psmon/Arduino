@@ -31,6 +31,10 @@ public sealed class BleChatProxy : UntypedActor
     public sealed record Greet;
     /// <summary>One inbound line from the device, tag included.</summary>
     public sealed record Line(string Text);
+    /// <summary>One inbound binary frame from the device (0xA5 microphone audio).</summary>
+    public sealed record MicFrame(byte[] Data);
+    /// <summary>Ask the Chat app to record for a while ("C" remote-control command).</summary>
+    public sealed record Talk(int Milliseconds);
 
     public BleChatProxy(BleLink link, IActorRef chat)
     {
@@ -50,6 +54,17 @@ public sealed class BleChatProxy : UntypedActor
 
             case Line line:
                 Inbound(line.Text);
+                break;
+
+            case Talk talk:
+                _log.Info("asking the chat app to record for {0} ms", talk.Milliseconds);
+                _ = _link.SendLineAsync($"C {{\"cmd\":\"talk\",\"ms\":{talk.Milliseconds}}}");
+                break;
+
+            case MicFrame mic:
+                // Forwarded as a plain byte[] so ChatActor handles the Chat app's audio with
+                // exactly the code path it uses for AskBot's.
+                _chat.Tell(mic.Data, Self);
                 break;
 
             // Everything below arrives from ChatActor, addressed to this proxy.

@@ -29,7 +29,7 @@ Neither firmware app needed changing for that, and there is no WiFi anywhere in 
 | Spoken answers (SuperTonic → ADPCM → `byte[]` messages) | **verified** end to end, inside the AOT binary too |
 | On the watch: AskBot associates and speaks | **verified on hardware** over BLE, no WiFi |
 | On the watch: the Chat app served by the same actors | **verified on hardware** (same answer, same voice) |
-| Microphone → STT | **not implemented** — speech input is still the Chat app's job, over BLE |
+| Microphone → STT (Whisper) | **verified on hardware** through the Chat app's mic; AskBot has no mic button yet |
 
 ```powershell
 pwsh -File project/samples/akka/run_test.ps1        # framework-dependent host
@@ -105,6 +105,27 @@ Try it without any of the rest:
 AskBot.Host.exe --speak "안녕하세요. 액터 모델로 대답합니다." --out hello.wav
 ```
 
+## Speech in
+
+The Chat app's microphone now reaches the same actors: `voice` / `0xA5` frames / `end` →
+ADPCM decode → **whisper.cpp** (`ggml-small.bin`, already installed by AgentZeroLite) →
+the transcript goes back to the watch as an `stt` stage and then straight into the normal
+answer path. Since both apps share `ChatActor`, AskBot inherits this the moment it grows a
+mic button.
+
+Two findings worth keeping:
+
+- whisper.cpp's default thread count turned a 4.1 s capture into **25.6 s** of work. Pinned
+  to `ProcessorCount - 1` threads with the language fixed rather than auto-detected it is
+  **2.3 s** cold and **0.24 s** warm.
+- On a quiet capture whisper invents text (`[구독 / 좋아요]`, `[감사합니다]`), which the
+  watch would then send to the LLM as a question. A level gate stops that: a quiet room here
+  measures peak -46.8 dBFS / rms -58.9 dBFS, so anything below the thresholds returns
+  "no speech detected" without ever loading the audio into the model.
+
+`AkkaHost.exe --talk 4000` asks the watch to record for four seconds on connect - how this
+was tested without touching the device.
+
 ## Why BLE and not WiFi
 
 WiFi worked - the watch associated four seconds after power-on - and then tore the screen.
@@ -157,6 +178,7 @@ host/                        .NET 10 + Akka 1.6 host for both watch apps
     Voice/SuperTonic.cs      SuperTonic-3 ONNX pipeline (ported, MIT, Supertone Inc)
     Voice/DeviceAudio.cs     44.1k -> 16k resampler, IMA ADPCM, frame builder
     Voice/VoiceSynth.cs      lazy model load, style cache, device-ready frames
+    Voice/Stt.cs             whisper.cpp via Whisper.net + the silence gate
     appsettings.json         providers; default is the offline "echo"
 
 pc/ble_akka_bridge.py        standalone BLE->TCP bridge (only needed without AkkaHost)
@@ -200,6 +222,7 @@ BLE and serves both apps. Useful flags:
 |---|---|
 | `--provider netclaw` | use a real chat CLI instead of the offline `echo` loopback |
 | `--announce "…"` | say something to a device as soon as it connects (push notification, and the way to test screen + speaker without touching the watch) |
+| `--talk 4000` | ask the Chat app to record for 4 s on connect (tests the microphone path) |
 | `--no-ble` | skip the BLE central; only network peers reach the host (what `run_test.ps1` uses) |
 | `--device claude-hud` | advertised name to connect to |
 
@@ -222,8 +245,9 @@ existing claude_hud, Chat and Settings apps are untouched.
 
 ## Next steps
 
-1. Microphone → STT, the other half of Chat parity: the `0xA5` frames already arrive at
-   the host, and Whisper `ggml-small.bin` is installed next to the SuperTonic bundle.
-   Wiring it up serves both apps at once, since both share `ChatActor`.
-2. Re-check Native AOT now that WinRT is in the picture (`-p:AkkaHostAot=true`).
+1. A microphone on AskBot's own screen. The host side is done; what is missing is on the
+   device, and it needs the audio codec to become a shared service the way WiFi did -
+   `brookesia_app_chat`'s core currently owns the microphone handle, so a second app cannot
+   open it.
+2. Re-check Native AOT now that WinRT and Whisper are in the picture (`-p:AkkaHostAot=true`).
 3. An on-screen keyboard (`lv_keyboard`) so questions are not limited to presets.
