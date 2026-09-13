@@ -179,11 +179,45 @@ public static class SuperTonicText
         return result.ToString();
     }
 
+    /// <summary>
+    /// Hangul syllable -> initial/medial/final jamo, by the Unicode algorithm.
+    ///
+    /// SuperTonic's unicode_indexer.json has no composed Hangul at all: U+AC00 and every
+    /// other syllable map to -1, while the jamo at U+1100/U+1161/U+11A8 have real ids. The
+    /// reference implementation gets the decomposition from NFKD - but that depends on the
+    /// runtime's globalization data, and with InvariantGlobalization on it silently does
+    /// nothing, which turned every Korean answer into noise. Doing it explicitly costs
+    /// fifteen lines and cannot be switched off by a build property.
+    /// </summary>
+    public static string DecomposeHangul(string text)
+    {
+        const int SBase = 0xAC00, LBase = 0x1100, VBase = 0x1161, TBase = 0x11A7;
+        const int VCount = 21, TCount = 28, NCount = VCount * TCount;   // 588
+        const int SCount = 19 * NCount;                                  // 11172
+
+        var result = new StringBuilder(text.Length + 8);
+        foreach (var c in text)
+        {
+            var index = c - SBase;
+            if (index < 0 || index >= SCount)
+            {
+                result.Append(c);
+                continue;
+            }
+            result.Append((char)(LBase + index / NCount));
+            result.Append((char)(VBase + index % NCount / TCount));
+            var trailing = index % TCount;
+            if (trailing != 0) result.Append((char)(TBase + trailing));
+        }
+        return result.ToString();
+    }
+
     public static string Preprocess(string text, string lang)
     {
         lang = SuperTonicLanguages.Coerce(lang);
 
         text = text.Normalize(NormalizationForm.FormKD);
+        text = DecomposeHangul(text);   // NFKD may or may not have done it; this always does
         text = RemoveEmojis(text);
 
         foreach (var (from, to) in SymbolReplacements) text = text.Replace(from, to);

@@ -63,6 +63,42 @@ public static class Program
             return 0;
         }
 
+        // Dumps exactly what the tokenizer sees. Korean is the case that needs checking: the
+        // indexer has no composed Hangul at all (every syllable maps to -1) and expects the
+        // NFKD-decomposed jamo instead.
+        var tokenText = Arg(args, "--tokens");
+        if (tokenText != null)
+        {
+            var pre = SuperTonicText.Preprocess(tokenText, Arg(args, "--lang") ?? "ko");
+            var tokenizer = SuperTonicTokenizer.Load(voice.ModelDirectory);
+            var tokens = tokenizer.Encode(pre);
+            Console.WriteLine($"preprocessed ({pre.Length} chars): {pre}");
+            Console.WriteLine($"codepoints: {string.Join(" ", pre.Select(c => $"U+{(int)c:04X}"))}");
+            Console.WriteLine($"ids       : {string.Join(" ", tokens)}");
+            Console.WriteLine($"unmapped  : {tokens.Count(t => t <= 0)} of {tokens.Length}");
+            return 0;
+        }
+
+        // The other half of the speech check: transcribe a WAV. Pairing it with --speak says
+        // whether what the watch plays is actually intelligible, instead of guessing from a
+        // duration.
+        //   AkkaHost.exe --speak "…" --out x.wav   then   AkkaHost.exe --hear x.wav
+        var hearPath = Arg(args, "--hear");
+        if (hearPath != null)
+        {
+            if (!stt.Available)
+            {
+                Console.Error.WriteLine($"stt unavailable: {stt.Status}");
+                return 3;
+            }
+            var wav = File.ReadAllBytes(hearPath);
+            // Skip the 44-byte canonical header; these are our own files.
+            var pcm = wav.Length > 44 ? wav[44..] : wav;
+            var heard = stt.TranscribeAsync(pcm, Arg(args, "--lang")).GetAwaiter().GetResult();
+            Console.WriteLine($"heard: {(heard.Length == 0 ? "(nothing)" : heard)}");
+            return 0;
+        }
+
         // Classic remoting (akka.tcp://) on purpose: Artery exists on the 1.6 branch but ships
         // disabled and is not wire-compatible with the protocol the device's C++ client speaks.
         var hocon = ConfigurationFactory.ParseString($@"

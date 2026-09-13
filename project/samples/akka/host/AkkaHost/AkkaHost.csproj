@@ -10,7 +10,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>AkkaHost</RootNamespace>
     <AssemblyName>AkkaHost</AssemblyName>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- NOT invariant: with globalization-invariant mode on, String.Normalize(FormKD) leaves
+         Hangul composed, every syllable maps to -1 in SuperTonic's unicode indexer (it only
+         has the decomposed jamo) and Korean came out as noise. The decomposition below no
+         longer depends on it, but nothing else should either. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
 
     <!-- Akka.Remote is NOT AOT-clean yet (HOCON Type loading, Props expressions,
          Newtonsoft fallback - see akkadotnet/akka.net#7246, open against the 1.6

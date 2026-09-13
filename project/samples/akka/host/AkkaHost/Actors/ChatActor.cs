@@ -59,6 +59,7 @@ public sealed class ChatActor : UntypedActor
     private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target,
         string Voice, string Language);
     private sealed record SpeechFailed(string Key, int RequestId, string Error, IActorRef Target);
+    private sealed record SpeechText(int RequestId, string Text);
     private sealed record Transcribed(string Key, int RequestId, string Text, IActorRef Target);
     private sealed record TranscribeFailed(string Key, int RequestId, string Error, IActorRef Target);
 
@@ -121,6 +122,11 @@ public sealed class ChatActor : UntypedActor
 
             case byte[] frame:
                 MicFrame(frame);
+                break;
+
+            case SpeechText speaking:
+                _log.Info("speaking #{0}, {1} chars: {2}", speaking.RequestId, speaking.Text.Length,
+                    Head(speaking.Text, 200));
                 break;
 
             case Transcribed done:
@@ -318,7 +324,8 @@ public sealed class ChatActor : UntypedActor
                 if (last) writer.WriteBoolean("done", true);
             }));
         }
-        _log.Info("answered #{0} in {1} chunk(s), {2} chars", answered.RequestId, chunks.Count, text.Length);
+        _log.Info("answered #{0} in {1} chunk(s), {2} chars: {3}", answered.RequestId, chunks.Count,
+            text.Length, Head(text, 200));
 
         if (device.WantsVoice && _voice?.Available == true && text.Length > 0)
             StartSpeech(answered.Key, device, answered.RequestId, text, answered.Target);
@@ -342,6 +349,9 @@ public sealed class ChatActor : UntypedActor
             var sw = Stopwatch.StartNew();
             try
             {
+                // Logged separately from the displayed answer so a mismatch between what the
+                // watch shows and what it says is visible rather than guessed at.
+                self.Tell(new SpeechText(requestId, text));
                 var speech = voice.Synthesize(text, requestId, voiceId, language,
                     cancel?.Token ?? CancellationToken.None);
                 if (cancel?.IsCancellationRequested != true)
