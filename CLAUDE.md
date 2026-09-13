@@ -121,3 +121,28 @@ Public repo `psmon/Arduino`, default branch `main`, `gh` CLI authenticated. Norm
   scripts in `~/.claude/hud_amoled/`). Keep this **strictly separate** from the old board's `claude_hud/pc`
   (USB+BLE+HTTP) — do not share files between the two devices' code or installers.
 - Factory-recovery image: Waveshare repo `Firmware/*FactoryOnly*.bin` at offset 0x0.
+
+## akka / AskBot — the AMOLED board as a peer in a .NET actor system (since 2026-09-13)
+
+`project/samples/akka/` (host + portable C++ client module + a headless ESP-IDF example) and the firmware app
+`claude_hud_amoled/components/brookesia_app_askbot/`. The board joins a .NET 10 + **Akka 1.6 nightly**
+`ActorSystem` over classic remoting and registers a **client actor** at
+`akka.tcp://askbot-device@<ip>:2553/user/chat`, so the host pushes stages and reply chunks to it as ordinary
+actor messages. Same conversation flow as the Chat app; **WiFi TCP, not BLE** — Akka remoting is TCP, so the
+BLE-only rule of the other apps does not apply, and WiFi only starts when AskBot is first opened.
+
+- **Akka.Remote does run under Native AOT**, with two workarounds, both in `host/`: HOCON resolves its
+  provider/transport/serializers *by type name*, so the assemblies need `TrimmerRootAssembly` (3.6 MB → 26 MB);
+  and `Props.Create<T>()` — including the `() => new T()` lambda form — is `Activator.CreateInstance`, so actors
+  must be created with `Props.CreateBy` + an explicit producer (`AotProps.cs`). `PublishAot` is opt-in
+  (`-p:AskBotAot=true`). Akka 1.6 is nightly-only (nuget.org stable is 1.5.71); `host/nuget.config` adds the feed.
+- **.NET cannot run on the ESP32-S3** — Native AOT has no Xtensa/bare-metal target, and nanoFramework's nanoCLR
+  is an IL interpreter with non-netstandard class libs. Actors stay on the PC; the device speaks the wire protocol.
+- `pwsh -File project/samples/akka/run_test.ps1 [-Aot]` is the whole verification: builds both sides, starts the
+  host, runs the raw protocol (`askbot_cli`) and the full chat flow (`askbot_chat`, offline `echo` provider), and
+  exits non-zero if anything goes unanswered. `cpp/build.ps1 -Test` runs the PDU unit tests.
+- Wire facts that bite (handshake carries scheme `tcp` while paths use `akka.tcp`; `seq` must be written as
+  `ulong.MaxValue`; string = serializer 17 / manifest `S`; byte[] = serializer 4) are in
+  `project/samples/akka/PROTOCOL.md` — read it before touching `cpp/src/akka_wire.cpp`.
+- Voice (mic/STT/TTS) is **not** ported yet: that is still the BLE Chat app's job. Windows `System.Speech` is
+  COM-based and will not survive AOT, so the voice path needs an out-of-process synthesiser.

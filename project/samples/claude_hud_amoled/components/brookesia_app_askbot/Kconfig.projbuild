@@ -1,0 +1,42 @@
+menu "AskBot (Akka remoting app)"
+
+    config ASKBOT_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            AskBot needs IP: Akka classic remoting is TCP. WiFi is only started when
+            the app is first opened, so the rest of this firmware stays BLE-only
+            until then.
+
+    config ASKBOT_WIFI_PASSWORD
+        string "WiFi password"
+        default "mypassword"
+
+    config ASKBOT_HOST_IP
+        string "AskBot.Host IP address"
+        default "192.168.0.10"
+        help
+            Must equal what the host advertises (its --host argument, i.e.
+            akka.remote.dot-netty.tcp.public-hostname). 127.0.0.1 cannot work here.
+
+    config ASKBOT_HOST_PORT
+        int "AskBot.Host port"
+        default 2552
+
+    config ASKBOT_HOST_SYSTEM
+        string "Host ActorSystem name"
+        default "AskBot"
+
+    config ASKBOT_LOCAL_SYSTEM
+        string "This device's ActorSystem name"
+        default "askbot-device"
+
+    config ASKBOT_LOCAL_PORT
+        int "Port this device advertises"
+        default 2553
+        help
+            Advertised in the handshake only. Nothing dials it while the host keeps
+            akka.remote.use-passive-connections = on (its default), which is what
+            lets the device work without a listening socket.
+
+endmenu
