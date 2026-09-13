@@ -16,6 +16,12 @@ public sealed class ProviderConfig
     public string ResponseField { get; init; } = "response";
     public int TimeoutSec { get; init; } = 120;
     public string? WorkingDir { get; init; }
+    /// <summary>
+    /// Whether to prepend <see cref="HostConfig.ReplyStyle"/> to the prompt. False for the
+    /// loopback provider: echoing the style instructions back made the watch read the system
+    /// prompt aloud, which sounds exactly like being told to go and configure something.
+    /// </summary>
+    public bool UseReplyStyle { get; init; } = true;
 }
 
 /// <summary>
@@ -124,6 +130,8 @@ public sealed class HostConfig
         ResponseField = Str(element, "ResponseField") ?? "response",
         TimeoutSec = element.TryGetProperty("TimeoutSec", out var t) && t.TryGetInt32(out var timeout) ? timeout : 120,
         WorkingDir = Str(element, "WorkingDir"),
+        UseReplyStyle = !element.TryGetProperty("UseReplyStyle", out var style) ||
+                        style.ValueKind != JsonValueKind.False,
     };
 
     private static string? Str(JsonElement element, string name)
@@ -156,5 +164,6 @@ public sealed class HostConfig
         PromptVia = "stdin",
         Output = "text",
         TimeoutSec = 20,
+        UseReplyStyle = false,
     };
 }
