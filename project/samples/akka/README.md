@@ -1,5 +1,10 @@
 # akka — an ESP32-S3 as a peer in a .NET Akka actor system
 
+<img src="docs/ui-hero.svg" alt="The three watch apps: AskBot (hold to talk, the actor answers), Chat, the Claude HUD usage tile, and the device-wide Settings - all fed by one AkkaHost over one BLE link" width="100%">
+
+<sub>Drawn from the real LVGL layouts by <code>tools/gen_hero_svg.py</code>; regenerate it when a
+screen moves.</sub>
+
 The device joins a .NET 10 `ActorSystem` over Akka.NET classic remoting and takes
 part as a **client actor**: it has an address, the host `Tell`s it, and it answers.
 The question this sample exists to settle is whether the actor model is usable from

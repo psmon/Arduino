@@ -222,7 +222,7 @@ void AskBot::buildUi(lv_obj_t *scr)
     lv_label_set_long_mode(_lblAi, LV_LABEL_LONG_WRAP);
 
     _lblStage = mkLabel(scr, "", &font_nanum_18, C_GRAY);
-    lv_obj_set_width(_lblStage, 300);
+    lv_obj_set_width(_lblStage, 236);
     lv_label_set_long_mode(_lblStage, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(_lblStage, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(_lblStage, LV_ALIGN_TOP_MID, 0, Y_STAGE);
@@ -246,7 +246,7 @@ void AskBot::buildUi(lv_obj_t *scr)
     lv_obj_center(mkLabel(_btnStop, LV_SYMBOL_STOP, &lv_font_montserrat_20, C_WHITE));
 
     _btnMode = mkBtn(scr, SIDE_D, SIDE_D, LV_RADIUS_CIRCLE, C_DIM, modeEvent, LV_EVENT_CLICKED, this);
-    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, -X_SIDE - 4, Y_SIDE - 58);
+    lv_obj_align(_btnMode, LV_ALIGN_TOP_MID, -X_SIDE - 48, Y_STAGE - 10);
     _lblMode = mkLabel(_btnMode, LV_SYMBOL_MUTE, &lv_font_montserrat_20, C_GRAY);
     lv_obj_center(_lblMode);
     lv_obj_add_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
