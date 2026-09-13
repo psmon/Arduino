@@ -72,17 +72,18 @@ AskBot::AskBot(bool use_status_bar, bool use_navigation_bar):
 
 AskBot::~AskBot() {}
 
-// Nothing at install time on purpose. The Chat app starts BLE here, but this app
-// needs WiFi, and bringing the radio up for a user who never opens AskBot would
-// change the power and coexistence behaviour of the whole firmware.
+// Same shape as the Chat app: the link comes up at install time (i.e. at boot), so
+// the association survives the app being closed and an answer in flight still
+// lands. WiFi itself belongs to the device and the Settings app already started it.
 bool AskBot::init(void)
 {
+    Core::instance().start();
     return true;
 }
 
 bool AskBot::run(void)
 {
-    Core::instance().start();       // idempotent: WiFi + association come up once
+    Core::instance().start();       // idempotent; already running from init()
     buildUi(lv_scr_act());
     _seen = 0;
     _lastReplyLen = 0;

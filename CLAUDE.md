@@ -150,5 +150,18 @@ BLE-only rule of the other apps does not apply, and WiFi only starts when AskBot
   `hostinfo` and text-only answers. Host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
   Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message (serializer 4). Quick check:
   `AskBot.Host.exe --speak "…" --out hello.wav`.
+- **WiFi is a device-wide service owned by the Settings app** (`components/brookesia_app_settings/device_wifi.*`),
+  started at boot, credentials in NVS (`netcfg`) with Kconfig defaults, status shown in the Settings screen. AskBot
+  only calls `device_wifi::waitForIp()`. The radio is **2.4 GHz only** — a 5 GHz SSID never associates.
+- **Two device-side traps, both now fixed in `sdkconfig.defaults`** (verified on hardware 2026-09-13):
+  `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` was 4096, so WiFi's small allocations ate the internal DMA heap down to
+  ~7 KB and the LCD could no longer get a flush buffer (`spi_master: setup_dma_priv_buffer` → `Draw bitmap failed:
+  ESP_ERR_NO_MEM`) — the screen froze mid-redraw and looked like a hang while the actor link was fine. The BSP
+  flushes a PSRAM draw buffer of `buffer_height 50` = 46.6 KB per transfer, so the reserve is now 128 KB. Second
+  trap: app install order is not guaranteed, so `device_wifi::start()` must be serialised — AskBot's link task and
+  the Settings app raced and created the station netif twice, asserting in `esp_netif_create_default_wifi_sta` and
+  boot-looping the device.
+- `AskBot.Host.exe --announce "…"` makes the host speak to a device as soon as it connects: a push notification,
+  and the way to test the screen and speaker without touching the watch.
 - **Microphone → STT is not ported**: speech input is still the BLE Chat app's job. Whisper `ggml-small.bin` is
   already installed at `~/.ollama/models/agentzero/whisper` if/when that is wired up.

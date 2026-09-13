@@ -8,8 +8,14 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
 CONFIG_SPIRAM_RODATA=y
 CONFIG_SPIRAM_SPEED_80M=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=4096
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+# 128 KB, not the 4 KB this started with. The allocator hands internal RAM to
+# ordinary allocations until only the reserve is left, and WiFi's many small buffers
+# took it down to ~7 KB - at which point the LCD could no longer get an internal DMA
+# buffer for a flush and the screen froze mid-redraw. The BSP flushes through a
+# PSRAM draw buffer of buffer_height 50, i.e. 466*50*2 = 46.6 KB per transfer, so the
+# reserve has to keep a contiguous block of at least that much available.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
@@ -75,3 +81,21 @@ CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 
 # Monospace 8x16 font for the CREW tile ASCII characters
 CONFIG_LV_FONT_UNSCII_16=y
+
+# WiFi memory tuning, for the AskBot app (the other apps are BLE-only).
+# Bringing WiFi up with stock buffer counts starved the internal DMA heap and the
+# LCD stopped being able to flush:
+#   spi_master: setup_dma_priv_buffer: Failed to allocate priv TX buffer
+#   esp_lvgl:bridge_v9: Draw bitmap failed: ESP_ERR_NO_MEM
+# LVGL's draw buffer lives in PSRAM, so every flush needs a temporary internal
+# DMA buffer - which WiFi had eaten. Push WiFi/LWIP into PSRAM and trim the counts.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# WiFi code stays in flash instead of IRAM: ~35 KB of internal RAM back, and our
+# traffic (a few hundred 484-byte frames) does not need the throughput.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880

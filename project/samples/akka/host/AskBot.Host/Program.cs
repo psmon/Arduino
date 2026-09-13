@@ -69,13 +69,15 @@ public static class Program
         // AotProps, not Props.Create<T>(): see AotProps.cs - the reflection path dies
         // in a Native AOT binary.
         var ask = system.ActorOf(AotProps.Of(() => new AskActor()), "ask");
-        system.ActorOf(AotProps.Of(() => new ChatActor(config, voice)), "chat");
+        var announce = Arg(args, "--announce");
+        system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce)), "chat");
 
         Console.WriteLine("AskBot host up. Remote actor paths for clients:");
         Console.WriteLine($"  akka.tcp://{sysName}@{advertise}:{port}/user/ask    (echo actor, smoke test)");
         Console.WriteLine($"  akka.tcp://{sysName}@{advertise}:{port}/user/chat   (chat protocol)");
         Console.WriteLine($"providers: {string.Join(", ", config.Providers.Keys)} (default: {config.DefaultProvider})");
         Console.WriteLine($"voice: {voice.Status}");
+        if (announce != null) Console.WriteLine($"announce on connect: {announce}");
         Console.WriteLine();
 
         if (Console.IsInputRedirected)

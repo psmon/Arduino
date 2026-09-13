@@ -51,6 +51,7 @@ private:
     Row _vol, _gain, _bright;
     lv_obj_t *_btnMode = nullptr;
     lv_obj_t *_lblMode = nullptr;
+    lv_obj_t *_lblWifi = nullptr;
     lv_obj_t *_lblHint = nullptr;
 
     static Settings *_instance;

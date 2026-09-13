@@ -7,21 +7,17 @@
 #include "bsp/esp-bsp.h"
 #include "cJSON.h"
 #include "esp_codec_dev.h"
-#include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_netif.h"
-#include "esp_wifi.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "nvs_flash.h"
 
 #include "akka/remote_client.h"
 #include "akka/transport.h"
 #include "askbot/ima_adpcm.h"
+#include "device_wifi.hpp"
 
 static const char *TAG = "askbot";
 
@@ -38,89 +34,6 @@ constexpr int    SAMPLE_RATE = 16000;              // what the host resamples Su
 constexpr size_t SPK_MAX_BYTES = 20 * SAMPLE_RATE * 2;   // 20 s of PCM16 per buffer
 
 uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
-
-// ---------------------------------------------------------------- wifi
-EventGroupHandle_t s_wifiEvents = nullptr;
-constexpr int WIFI_OK = BIT0;
-constexpr int WIFI_FAIL = BIT1;
-constexpr int WIFI_MAX_RETRY = 10;
-int s_retries = 0;
-
-void onWifi(void *, esp_event_base_t base, int32_t id, void *data)
-{
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retries < WIFI_MAX_RETRY) {
-            s_retries++;
-            ESP_LOGW(TAG, "wifi retry %d/%d", s_retries, WIFI_MAX_RETRY);
-            esp_wifi_connect();
-        } else {
-            xEventGroupSetBits(s_wifiEvents, WIFI_FAIL);
-        }
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        s_retries = 0;
-        xEventGroupSetBits(s_wifiEvents, WIFI_OK);
-    }
-}
-
-// Brings up station mode and waits for a lease. Returns the assigned IP, or an
-// empty string. Tolerates a netif/event loop another component already created -
-// BLE is up in this firmware long before AskBot is opened.
-std::string wifiUp()
-{
-    static bool started = false;
-    static std::string ip;
-    if (started) return ip;
-
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES) ESP_LOGW(TAG, "nvs init: %s", esp_err_to_name(err));
-
-    s_wifiEvents = xEventGroupCreate();
-    if (esp_netif_init() != ESP_OK) ESP_LOGW(TAG, "netif already initialised");
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) ESP_LOGW(TAG, "event loop: %s", esp_err_to_name(err));
-
-    esp_netif_t *netif = esp_netif_create_default_wifi_sta();
-    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
-    if (esp_wifi_init(&init) != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_init failed");
-        return {};
-    }
-
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &onWifi, nullptr, nullptr);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &onWifi, nullptr, nullptr);
-
-    wifi_config_t cfg = {};
-    snprintf((char *)cfg.sta.ssid, sizeof(cfg.sta.ssid), "%s", CONFIG_ASKBOT_WIFI_SSID);
-    snprintf((char *)cfg.sta.password, sizeof(cfg.sta.password), "%s", CONFIG_ASKBOT_WIFI_PASSWORD);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_config(WIFI_IF_STA, &cfg);
-    if (esp_wifi_start() != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_start failed");
-        return {};
-    }
-    started = true;
-
-    const EventBits_t bits = xEventGroupWaitBits(s_wifiEvents, WIFI_OK | WIFI_FAIL, pdFALSE, pdFALSE,
-                                                 pdMS_TO_TICKS(30000));
-    if ((bits & WIFI_OK) == 0) {
-        ESP_LOGE(TAG, "wifi did not connect to '%s'", CONFIG_ASKBOT_WIFI_SSID);
-        return {};
-    }
-
-    esp_netif_ip_info_t info{};
-    esp_netif_get_ip_info(netif, &info);
-    char buf[16];
-    snprintf(buf, sizeof(buf), IPSTR, IP2STR(&info.ip));
-    ip.assign(buf);
-    ESP_LOGI(TAG, "wifi up, ip %s", ip.c_str());
-    return ip;
-}
 
 void taskTrampoline(void *arg) { ((Core *)arg)->linkTask(); }
 void playTrampoline(void *arg) { ((Core *)arg)->playTask(); }
@@ -487,15 +400,22 @@ void Core::linkTask()
         bump();
     }
 
-    const std::string ip = wifiUp();
+    // WiFi belongs to the device (Settings app starts it at boot), so this only
+    // waits for an address instead of owning the radio.
+    const std::string ip = device_wifi::waitForIp(40000);
     if (ip.empty()) {
+        const device_wifi::Status wifi = device_wifi::status();
         std::lock_guard<std::mutex> lock(m_);
         s_.link = Link::WifiFailed;
-        snprintf(s_.error, sizeof(s_.error), "wifi: %s", CONFIG_ASKBOT_WIFI_SSID);
+        snprintf(s_.error, sizeof(s_.error), "wifi: %s",
+                 wifi.ssid.empty() ? "not configured" : wifi.ssid.c_str());
         bump();
         vTaskDelete(nullptr);
         return;
     }
+    ESP_LOGI(TAG, "using ip %s (free internal DMA heap %u B, largest block %u B)", ip.c_str(),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 
     akka::ClientConfig config;
     config.remote.system = CONFIG_ASKBOT_HOST_SYSTEM;

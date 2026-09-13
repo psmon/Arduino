@@ -9,6 +9,7 @@
 #include "esp_lib_utils.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "device_wifi.hpp"
 #include "bsp/esp-bsp.h"
 #include "settings_app.hpp"
 #include "boot_button.hpp"
@@ -93,7 +94,11 @@ bool Settings::init(void)
     loadBrightness();
     bsp_display_brightness_set(s_brightness);
     settings_app::startBootButton();
-    ESP_UTILS_LOGI("Init: brightness restored to %d%%, BOOT button armed", s_brightness);
+    // WiFi is a device-wide service, not AskBot's: bring it up at boot so any app
+    // finds a live address, and so the BLE apps are unaffected either way.
+    device_wifi::start();
+    ESP_UTILS_LOGI("Init: brightness restored to %d%%, BOOT button armed, wifi %s", s_brightness,
+                   device_wifi::configured() ? "starting" : "off (no SSID)");
     return true;
 }
 
@@ -282,6 +287,14 @@ void Settings::buildUi(lv_obj_t *scr)
     lv_obj_add_event_cb(btnTest, testEvent, LV_EVENT_CLICKED, nullptr);
     lv_obj_center(mkLabel(btnTest, LV_SYMBOL_PLAY "  Test tone", &font_nanum_18, C_WHITE));
 
+    // WiFi is device-wide (started at boot, used by AskBot); shown here because this
+    // is where the device's own settings live. Read-only for now: there is no
+    // on-screen keyboard, so credentials are provisioned over the BLE link.
+    _lblWifi = mkLabel(col, "WiFi: ...", &font_nanum_18, C_GRAY);
+    lv_obj_set_width(_lblWifi, W_COL - 16);
+    lv_label_set_long_mode(_lblWifi, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(_lblWifi, LV_TEXT_ALIGN_CENTER, 0);
+
     _lblHint = mkLabel(col, "The BOOT button also steps the volume:\nshort press up, long press down.",
                        &font_nanum_18, C_GRAY);
     lv_obj_set_width(_lblHint, W_COL - 16);
@@ -291,6 +304,28 @@ void Settings::buildUi(lv_obj_t *scr)
 
 void Settings::refresh()
 {
+    if (_lblWifi) {
+        const device_wifi::Status wifi = device_wifi::status();
+        char buf[128];
+        switch (wifi.state) {
+        case device_wifi::State::Off:
+            snprintf(buf, sizeof(buf), "WiFi: off (no SSID configured)");
+            break;
+        case device_wifi::State::Connecting:
+            snprintf(buf, sizeof(buf), "WiFi: connecting to %s%s", wifi.ssid.c_str(),
+                     wifi.retries ? " ..." : "");
+            break;
+        case device_wifi::State::Connected:
+            snprintf(buf, sizeof(buf), "WiFi: %s\n%s  (%d dBm)", wifi.ssid.c_str(), wifi.ip.c_str(),
+                     (int)wifi.rssi);
+            break;
+        case device_wifi::State::Failed:
+            snprintf(buf, sizeof(buf), "WiFi: could not join %s\n(2.4 GHz only)", wifi.ssid.c_str());
+            break;
+        }
+        lv_label_set_text(_lblWifi, buf);
+    }
+
     Core &core = Core::instance();
     uint32_t v = core.version();
     if (v == _seen) return;

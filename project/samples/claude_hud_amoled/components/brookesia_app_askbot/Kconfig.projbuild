@@ -1,16 +1,6 @@
+# WiFi credentials are not here: they belong to the device, and the Settings app owns
+# them (see components/brookesia_app_settings/Kconfig.projbuild).
 menu "AskBot (Akka remoting app)"
-
-    config ASKBOT_WIFI_SSID
-        string "WiFi SSID"
-        default "myssid"
-        help
-            AskBot needs IP: Akka classic remoting is TCP. WiFi is only started when
-            the app is first opened, so the rest of this firmware stays BLE-only
-            until then.
-
-    config ASKBOT_WIFI_PASSWORD
-        string "WiFi password"
-        default "mypassword"
 
     config ASKBOT_HOST_IP
         string "AskBot.Host IP address"

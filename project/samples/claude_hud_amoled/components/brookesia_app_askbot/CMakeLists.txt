@@ -20,7 +20,7 @@ set(AKKA_SRCS
 idf_component_register(
     SRCS ${PROJ_SRCS_C} ${PROJ_SRCS_CPP} ${AKKA_SRCS}
     INCLUDE_DIRS ${PROJ_SRC} ${AKKA_ROOT}/include
-    REQUIRES brookesia_core brookesia_app_claude_hud json esp_wifi esp_netif nvs_flash esp_event lwip
+    REQUIRES brookesia_core brookesia_app_claude_hud brookesia_app_settings json lwip
     WHOLE_ARCHIVE
 )
 

@@ -42,10 +42,18 @@ public sealed class ChatActor : UntypedActor
     private sealed record SpeechReady(string Key, int RequestId, Speech Speech, long ElapsedMs, IActorRef Target);
     private sealed record SpeechFailed(string Key, int RequestId, string Error, IActorRef Target);
 
-    public ChatActor(HostConfig config, VoiceSynth? voice = null)
+    /// <summary>
+    /// Optional text the host says to a device as soon as it connects: a push
+    /// notification, and the way to exercise the screen and speaker without
+    /// touching the watch.
+    /// </summary>
+    private readonly string? _announce;
+
+    public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null)
     {
         _config = config;
         _voice = voice;
+        _announce = string.IsNullOrWhiteSpace(announce) ? null : announce.Trim();
         _providers = new Dictionary<string, CliProvider>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, provider) in config.Providers)
         {
@@ -145,6 +153,13 @@ public sealed class ChatActor : UntypedActor
                         writer.WriteNumber("chat", device.Conversation);
                         writer.WriteNumber("v", 1);
                     }));
+                    if (_announce != null)
+                    {
+                        // Unsolicited answer: the device renders and speaks it the same
+                        // way it would an answer to its own question.
+                        device.WantsVoice = _voice?.Available == true;
+                        Complete(new Answered(key, 0, _announce, sender));
+                    }
                     break;
 
                 case "text":
