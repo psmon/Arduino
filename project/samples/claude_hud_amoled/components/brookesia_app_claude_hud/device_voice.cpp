@@ -143,10 +143,12 @@ bool setVoice(const char *id)
     return true;
 }
 
+// The device UI is English throughout (the answers themselves are whatever language the
+// host was asked for), so the language names are too.
 const char *langLabel(const char *code)
 {
     if (code == nullptr) return "?";
-    if (strcmp(code, "ko") == 0) return "한국어";
+    if (strcmp(code, "ko") == 0) return "Korean";
     if (strcmp(code, "en") == 0) return "English";
     if (strcmp(code, "auto") == 0) return "auto";
     return code;

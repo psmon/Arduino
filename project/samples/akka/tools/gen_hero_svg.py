@@ -179,9 +179,10 @@ w1.label(42, "ASUS-AI · netclaw", 10, GRAY)
 w1.pill(-46, 56, 146, 28, CARD, "actor?", GRAY)
 w1.pill(77, 56, 84, 28, CARD, "New chat", GRAY)
 w1.box(92, 344, 182)
-w1.label(116, "지금 액터가 동작하고 있어?", 10, CYAN, dx=-150, anchor="start")
-w1.label(146, "네, 시계가 액터 시스템의", 10, WHITE, dx=-150, anchor="start")
-w1.label(168, "피어로 붙어 있습니다.", 10, WHITE, dx=-150, anchor="start")
+w1.label(116, "Are you really a peer?", 10, CYAN, dx=-150, anchor="start")
+w1.label(146, "Yes - this watch registers a", 10, WHITE, dx=-150, anchor="start")
+w1.label(168, "client actor and the host", 10, WHITE, dx=-150, anchor="start")
+w1.label(190, "answers it directly.", 10, WHITE, dx=-150, anchor="start")
 w1.label(292, "done · 1 chunk · 1266 ms", 9.5, GREEN)
 w1.bar(304, 0.0, GREEN)
 w1.button(0, 318, 88, BLUE, "◉", WHITE, 16)
@@ -209,8 +210,8 @@ w2.label(42, "ASUS-AI · netclaw · chat 2", 10, GRAY)
 w2.pill(-46, 56, 146, 28, "#2a2440", "♪ Text + voice", PURPLE)
 w2.pill(77, 56, 84, 28, CARD, "New chat", GRAY)
 w2.box(92, 344, 182)
-w2.label(116, "오늘의 날씨는", 10, CYAN, dx=-150, anchor="start")
-w2.label(146, "오늘 서울은 맑고 선선해.", 10, WHITE, dx=-150, anchor="start")
+w2.label(116, "What is the weather today?", 10, CYAN, dx=-150, anchor="start")
+w2.label(146, "Seoul is clear and mild today.", 10, WHITE, dx=-150, anchor="start")
 w2.label(292, "listening 2.4s", 9.5, RED)
 w2.bar(308, 0.62, GREEN)
 w2.button(0, 324, 88, RED, "◉", WHITE, 16)
@@ -262,7 +263,7 @@ for i, (name, val) in enumerate(rows):
     w4.bar(yy + 30, val, GREEN, 220)
 for i, (label, value, col) in enumerate([
         ("Answer", "text + voice", PURPLE),
-        ("Listen", "한국어", WHITE),
+        ("Listen", "Korean", WHITE),
         ("Speak", "English", WHITE),
         ("Voice", "M2", CYAN)]):
     yy = 238 + i * 40
