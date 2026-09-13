@@ -16,6 +16,7 @@
 #include "nvs.h"
 #include "hud_transport.hpp"
 #include "device_voice.hpp"
+#include "device_mic.hpp"
 
 static const char *TAG = "chat_core";
 
@@ -159,22 +160,22 @@ bool Core::queueLine(const char *json)
     return true;
 }
 
+// The codec is a device service now (device_mic): this app holds it only while recording,
+// so AskBot can record too. Keeping the handle open for the life of the firmware is exactly
+// what used to make that impossible.
 bool Core::micInit()
 {
-    if (mic_) return true;
-    esp_codec_dev_handle_t h = bsp_audio_codec_microphone_init();
-    if (!h) { ESP_LOGW(TAG, "microphone init failed (bsp_audio_codec_microphone_init)"); return false; }
-    esp_codec_dev_set_in_gain(h, (float)micGain());
-    esp_codec_dev_sample_info_t fs = {};
-    fs.sample_rate = SAMPLE_RATE;
-    fs.channel = 1;
-    fs.bits_per_sample = 16;
-    int rc = esp_codec_dev_open(h, &fs);
-    if (rc != ESP_CODEC_DEV_OK) { ESP_LOGW(TAG, "codec open failed rc=%d", rc); return false; }
-    mic_ = h;
+    if (!device_mic::acquire()) return false;
+    mic_ = (void *)1;                  // "we are holding it"; the handle lives in device_mic
     { std::lock_guard<std::mutex> g(m_); s_.micOk = true; bump(); }
-    ESP_LOGI(TAG, "microphone ready: %d Hz mono 16-bit", SAMPLE_RATE);
     return true;
+}
+
+void Core::micDone()
+{
+    if (!mic_) return;
+    mic_ = nullptr;
+    device_mic::release();
 }
 
 // ---------------------------------------------------------------- state helpers
@@ -249,29 +250,15 @@ void Core::setVolume(int v)
 
 int Core::micGain()
 {
-    std::lock_guard<std::mutex> g(m_);
-    return s_.micGain;
+    return device_mic::gain();
 }
 
 void Core::setMicGain(int db)
 {
-    db = db < 0 ? 0 : (db > 60 ? 60 : db);
-    void *mic;
-    {
-        std::lock_guard<std::mutex> g(m_);
-        if (s_.micGain == db) return;
-        s_.micGain = db;
-        mic = mic_;
-        bump();
-    }
-    if (mic) esp_codec_dev_set_in_gain((esp_codec_dev_handle_t)mic, (float)db);
-    nvs_handle_t nvs;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) == ESP_OK) {
-        nvs_set_u8(nvs, "gain", (uint8_t)db);
-        nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    ESP_LOGI(TAG, "mic gain -> %d dB", db);
+    device_mic::setGain(db);
+    std::lock_guard<std::mutex> g(m_);
+    s_.micGain = device_mic::gain();
+    bump();
 }
 
 // A 0.4 s tone, so moving the volume slider does something audible without asking the host to speak.
@@ -591,7 +578,7 @@ void Core::captureTask()
 
         while (recording_ && bleConnected()) {
             int want = (int)(samples * sizeof(int16_t));
-            int rc = esp_codec_dev_read(mic_, pcm, want);
+            int rc = device_mic::read(pcm, want) ? ESP_CODEC_DEV_OK : -1;
             if (rc != ESP_CODEC_DEV_OK) { ESP_LOGW(TAG, "codec read rc=%d", rc); vTaskDelay(pdMS_TO_TICKS(10)); continue; }
 
             double acc = 0;
@@ -619,6 +606,7 @@ void Core::captureTask()
             if (el >= maxMs_) break;
         }
         recording_ = false;
+        micDone();          // let the codec go so the other app can record
 
         char end[48];
         snprintf(end, sizeof(end), "{\"t\":\"end\",\"id\":%d}", id);

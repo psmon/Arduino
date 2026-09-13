@@ -38,6 +38,21 @@ void DecodeAdpcmBlock(const uint8_t* block, size_t len, std::vector<int16_t>* pc
 // frames are arriving.
 size_t DecodeAdpcmBlockTo(const uint8_t* block, size_t len, uint8_t* out, size_t max_bytes);
 
+// Encoder state: carried across blocks so the predictor tracks the signal, but written into
+// every block header so a lost frame costs only that block.
+struct AdpcmState {
+    int predictor = 0;
+    int index = 0;
+};
+
+// Encodes `count` samples (even) into `out`, which needs 4 + count/2 bytes. Returns bytes
+// written. Mirror of the host's ImaAdpcm.EncodeBlock.
+size_t EncodeAdpcmBlock(const int16_t* samples, size_t count, AdpcmState* state, uint8_t* out);
+
+// Builds one microphone frame: 0xA5 | id | seq(2 LE) | block. Returns total length.
+size_t BuildMicFrame(uint8_t id, uint16_t seq, const uint8_t* block, size_t block_len, uint8_t* out,
+                     size_t out_capacity);
+
 // 16 kHz mono PCM16 wrapped in a WAV container, for saving what was received.
 std::vector<uint8_t> PcmToWav(const std::vector<int16_t>& pcm, uint32_t rate);
 

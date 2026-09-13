@@ -70,8 +70,16 @@ public sealed class ChatActor : UntypedActor
     /// </summary>
     private readonly string? _announce;
 
-    public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null, Stt? stt = null)
+    /// <summary>
+    /// When set, a device that connects is asked to record for this long. The Chat app takes
+    /// that as a "C" line over BLE; AskBot is a real actor, so it just gets a message.
+    /// </summary>
+    private readonly int _talkMs;
+
+    public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null, Stt? stt = null,
+        int talkMs = 0)
     {
+        _talkMs = talkMs;
         _config = config;
         _voice = voice;
         _stt = stt;
@@ -198,6 +206,15 @@ public sealed class ChatActor : UntypedActor
                         writer.WriteNumber("chat", device.Conversation);
                         writer.WriteNumber("v", 1);
                     }));
+                    if (_talkMs > 0 && name == "askbot")
+                    {
+                        Tell(sender, Json.Write(writer =>
+                        {
+                            writer.WriteString("t", "cmd");
+                            writer.WriteString("cmd", "talk");
+                            writer.WriteNumber("ms", _talkMs);
+                        }));
+                    }
                     if (_announce != null)
                     {
                         // Unsolicited answer: the device renders and speaks it the same

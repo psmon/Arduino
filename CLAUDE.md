@@ -198,9 +198,15 @@ byte stream rather than IP. The device's transport swapped from `MakeTcpStream()
   `--hear x.wav` transcribes it back through the same Whisper. Also `--tokens "…" --lang ko` prints the
   preprocessed string and its token ids (watch for `unmapped: N of M` — anything but 0 means the text never
   reached the model properly). Guessing from durations hides exactly this class of bug.
-- **AskBot's own mic is the remaining gap**: `brookesia_app_chat`'s core owns the `esp_codec_dev` microphone
-  handle, so a second app cannot open it. That needs the codec to become a shared device service the way WiFi
-  did (`device_wifi`), not a copy of the capture code.
+- **The microphone is a device service**: `components/brookesia_app_claude_hud/device_mic.*` owns the one
+  `esp_codec_dev` handle, reference counted, and each app holds it **only while recording** — the Chat app used
+  to hold it for the life of the firmware, which is exactly why AskBot could not record. Gain (NVS key `chat`/
+  `gain`, unchanged) lives there too. Both apps now capture in one session; verified by making each record 4 s
+  back to back. AskBot sends its frames as .NET `byte[]` messages through the tunnel, Chat as NUS writes, and
+  `ChatActor` decodes both.
+- Measured silence vs speech on this board at the default 30 dB gain: an empty room is **rms −47 to −61 dBFS**,
+  someone speaking is **−32 to −31**. `Stt.SilenceRmsDb` sits at −45 in that gap (−50 was too generous: a −47
+  capture got through and whisper answered it with "[끝]").
 
 ### Device-side traps found on hardware (all fixed in `sdkconfig.defaults`)
 

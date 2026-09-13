@@ -241,14 +241,13 @@ one-time model load. It runs inside the Native AOT binary too, which Windows
 
 ## Microphone and speech recognition
 
-Speech *input* works, through the Chat app's microphone (AskBot has no mic UI of its own
-yet - see below). Both apps are served by the same `ChatActor`, so the flow is one
-implementation:
+Speech *input* works from both apps - the Chat app writes its frames to NUS, AskBot sends
+them as .NET `byte[]` messages through the tunnel, and the same `ChatActor` handles both:
 
 | direction | message | meaning |
 |---|---|---|
 | device -> host | `{"t":"voice","id":N,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false}` | an utterance starts |
-| device -> host | `0xA5 \| id(1) \| seq(2 LE) \| ADPCM block` | 30-60 ms of microphone audio each |
+| device -> host | `0xA5 \| id(1) \| seq(2 LE) \| ADPCM block` | 60 ms of microphone audio each (960 samples) |
 | device -> host | `{"t":"end","id":N}` | utterance finished |
 | host -> device | `{"t":"answer","st":"rec","id":N}` | capture accepted |
 | host -> device | `{"t":"answer","st":"stt","id":N}` | transcribing (no `text` yet) |
@@ -302,5 +301,11 @@ Two things that decide whether this is usable:
   rms -58.9 dBFS at the default 30 dB mic gain, so captures below `SilencePeakDb` /
   `SilenceRmsDb` never reach the model and come back as `no speech detected`.
 
-`AkkaHost.exe --talk 4000` asks the Chat app to record for four seconds as soon as it
-connects: the way to exercise this path without touching the watch.
+`AkkaHost.exe --talk 4000` asks both apps to record for four seconds as soon as they connect:
+the Chat app gets a `C {"cmd":"talk","ms":4000}` line, AskBot gets
+`{"t":"cmd","cmd":"talk","ms":4000}` as an actor message. That is how this path gets exercised
+without touching the watch.
+
+One microphone, two apps: `device_mic` (in `brookesia_app_claude_hud`) owns the codec handle
+and hands it out reference-counted, so each app holds it only while recording. Before that the
+Chat app held it forever and AskBot could not record at all.

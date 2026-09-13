@@ -120,6 +120,61 @@ size_t DecodeAdpcmBlockTo(const uint8_t* block, size_t len, uint8_t* out, size_t
     return written;
 }
 
+size_t EncodeAdpcmBlock(const int16_t* samples, size_t count, AdpcmState* state, uint8_t* out)
+{
+    if (samples == nullptr || state == nullptr || out == nullptr) return 0;
+
+    out[0] = static_cast<uint8_t>(state->predictor);
+    out[1] = static_cast<uint8_t>(state->predictor >> 8);
+    out[2] = static_cast<uint8_t>(state->index);
+    out[3] = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        const int step = kStepTable[state->index];
+        int diff = samples[i] - state->predictor;
+        int nibble = 0;
+        if (diff < 0) {
+            nibble = 8;
+            diff = -diff;
+        }
+        int vp = step >> 3;
+        if (diff >= step) {
+            nibble |= 4;
+            diff -= step;
+            vp += step;
+        }
+        if (diff >= (step >> 1)) {
+            nibble |= 2;
+            diff -= step >> 1;
+            vp += step >> 1;
+        }
+        if (diff >= (step >> 2)) {
+            nibble |= 1;
+            vp += step >> 2;
+        }
+
+        state->predictor = Clamp16((nibble & 8) ? state->predictor - vp : state->predictor + vp);
+        const int index = state->index + kIndexTable[nibble];
+        state->index = index < 0 ? 0 : (index > 88 ? 88 : index);
+
+        if ((i & 1) == 0) out[4 + i / 2] = static_cast<uint8_t>(nibble);
+        else              out[4 + i / 2] |= static_cast<uint8_t>(nibble << 4);
+    }
+    return 4 + (count + 1) / 2;
+}
+
+size_t BuildMicFrame(uint8_t id, uint16_t seq, const uint8_t* block, size_t block_len, uint8_t* out,
+                     size_t out_capacity)
+{
+    if (block == nullptr || out == nullptr || out_capacity < block_len + 4) return 0;
+    out[0] = kMicMagic;
+    out[1] = id;
+    out[2] = static_cast<uint8_t>(seq);
+    out[3] = static_cast<uint8_t>(seq >> 8);
+    memcpy(out + 4, block, block_len);
+    return block_len + 4;
+}
+
 std::vector<uint8_t> PcmToWav(const std::vector<int16_t>& pcm, uint32_t rate)
 {
     const uint32_t data_size = static_cast<uint32_t>(pcm.size() * 2);

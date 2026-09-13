@@ -26,6 +26,7 @@ private:
     void refresh();
     static void timerCb(lv_timer_t *t);
     static void askEvent(lv_event_t *e);
+    static void micEvent(lv_event_t *e);
     static void presetEvent(lv_event_t *e);
     static void stopEvent(lv_event_t *e);
     static void newChatEvent(lv_event_t *e);
@@ -47,6 +48,8 @@ private:
     lv_obj_t *_lblUser = nullptr;
     lv_obj_t *_lblAi = nullptr;
     lv_obj_t *_lblStage = nullptr;
+    lv_obj_t *_btnMic = nullptr;
+    lv_obj_t *_lblMic = nullptr;
     lv_obj_t *_btnAsk = nullptr;
     lv_obj_t *_lblAsk = nullptr;
     lv_obj_t *_btnStop = nullptr;

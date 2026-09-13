@@ -29,7 +29,7 @@ Neither firmware app needed changing for that, and there is no WiFi anywhere in 
 | Spoken answers (SuperTonic → ADPCM → `byte[]` messages) | **verified** end to end, inside the AOT binary too |
 | On the watch: AskBot associates and speaks | **verified on hardware** over BLE, no WiFi |
 | On the watch: the Chat app served by the same actors | **verified on hardware** (same answer, same voice) |
-| Microphone → STT (Whisper) | **verified on hardware** through the Chat app's mic; AskBot has no mic button yet |
+| Microphone → STT (Whisper) | **verified on hardware** from both apps - AskBot has its own hold-to-talk button |
 | Voice settings on the watch (listen / speak / voice) | **verified on hardware**: `spoke #1 as M2/en` |
 
 ```powershell
@@ -126,6 +126,27 @@ Two findings worth keeping:
 
 `AkkaHost.exe --talk 4000` asks the watch to record for four seconds on connect - how this
 was tested without touching the device.
+
+## The microphone belongs to the device
+
+There is one ES7210 and one `esp_codec_dev` handle for it, and the Chat app used to hold that
+handle for the life of the firmware - which is why AskBot could not record at all. Same
+problem WiFi had, same fix: `device_mic` in `brookesia_app_claude_hud` owns the codec,
+reference counted, and each app holds it only while recording. Gain lives there too (it is a
+property of the microphone, not of a conversation) and the Settings screen still drives it.
+
+AskBot's own capture then mirrors the Chat app's: hold the centre button, 960-sample IMA ADPCM
+blocks (60 ms) leave as `0xA5` frames - for AskBot as .NET `byte[]` actor messages through the
+tunnel, for Chat as NUS writes - and the host decodes both with the same code. Verified in one
+session with both apps taking turns:
+
+```
+capture #1 ended: 4.0 s, 67 frames, 0 gaps, peak -15.1 dBFS   <- Chat app
+capture #1 ended: 4.0 s, 67 frames, 0 gaps, peak  -9.7 dBFS   <- AskBot, through the Akka tunnel
+```
+
+`AkkaHost.exe --talk 4000` asks *both* to record: the Chat app gets a `C` line, AskBot gets a
+`{"t":"cmd","cmd":"talk","ms":4000}` message, because it is an actor and that is simpler.
 
 ## Voice settings
 
@@ -274,9 +295,6 @@ existing claude_hud, Chat and Settings apps are untouched.
 
 ## Next steps
 
-1. A microphone on AskBot's own screen. The host side is done; what is missing is on the
-   device, and it needs the audio codec to become a shared service the way WiFi did -
-   `brookesia_app_chat`'s core currently owns the microphone handle, so a second app cannot
-   open it.
-2. Re-check Native AOT now that WinRT and Whisper are in the picture (`-p:AkkaHostAot=true`).
-3. An on-screen keyboard (`lv_keyboard`) so questions are not limited to presets.
+1. Re-check Native AOT now that WinRT and Whisper are in the picture (`-p:AkkaHostAot=true`).
+2. An on-screen keyboard (`lv_keyboard`) would retire the preset questions, now that speaking
+   is the main way in.

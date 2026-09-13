@@ -116,7 +116,7 @@ public sealed class HostConfig
             : -45,
         SilenceRmsDb = element.TryGetProperty("SilenceRmsDb", out var sr) && sr.TryGetDouble(out var srValue)
             ? srValue
-            : -50,
+            : -45,
     };
 
     private static ProviderConfig ReadProvider(JsonElement element) => new()

@@ -73,6 +73,7 @@ public:
 private:
     Core() = default;
     bool micInit();
+    void micDone();
     bool sendLine(const char *json);   // "R " + json, blocking - never call from the NimBLE host task
     bool queueLine(const char *json);  // hand "R " + json to the tx task (safe from any task)
     void setStage(Stage st, const char *err = nullptr);

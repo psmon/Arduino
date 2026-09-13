@@ -19,14 +19,24 @@
 #include "askbot/ima_adpcm.h"
 #include "askbot_ble_stream.hpp"
 #include "device_voice.hpp"
+#include "device_mic.hpp"
 
 static const char *TAG = "askbot";
 
 namespace askbot {
 namespace {
 
-constexpr int TX_QUEUE_LEN = 8;
+constexpr int TX_QUEUE_LEN = 12;
 constexpr size_t TX_MAX = 640;   // one JSON message; the frame budget is far larger
+
+// The outbound queue carries both kinds of message: JSON lines and microphone frames. They
+// have to share one queue to keep their order - a frame that overtakes its "voice" header
+// would be dropped by the host as belonging to no capture.
+struct TxItem {
+    uint8_t *data;
+    uint16_t len;
+    bool binary;
+};
 
 constexpr const char *CHAT_ACTOR = "/user/chat";   // on the host
 constexpr const char *LOCAL_ACTOR = "chat";        // ours: /user/chat on this node
@@ -38,6 +48,9 @@ uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 void taskTrampoline(void *arg) { ((Core *)arg)->linkTask(); }
 void playTrampoline(void *arg) { ((Core *)arg)->playTask(); }
+void captureTrampoline(void *arg) { ((Core *)arg)->captureTask(); }
+
+constexpr size_t MIC_SAMPLES_PER_BLOCK = 960;   // 60 ms at 16 kHz -> 484-byte payload
 
 }  // namespace
 
@@ -50,7 +63,7 @@ Core &Core::instance()
 void Core::start()
 {
     if (task_) return;
-    queue_ = xQueueCreate(TX_QUEUE_LEN, sizeof(char *));
+    queue_ = xQueueCreate(TX_QUEUE_LEN, sizeof(TxItem));
     if (!queue_) {
         ESP_LOGE(TAG, "tx queue alloc failed");
         return;
@@ -71,18 +84,169 @@ void Core::start()
     } else {
         ESP_LOGW(TAG, "play task create failed - answers stay text only");
     }
+
+    // Capture runs on its own task for the same reason as playback: the codec read blocks
+    // until the I2S DMA has samples.
+    TaskHandle_t capture = nullptr;
+    if (xTaskCreatePinnedToCore(captureTrampoline, "askbot_mic", 4096, this, 5, &capture, 1) == pdPASS) {
+        captureTask_ = capture;
+    } else {
+        ESP_LOGW(TAG, "capture task create failed - the microphone will not work");
+    }
+}
+
+// ---------------------------------------------------------------- microphone
+bool Core::startVoice(uint32_t maxMs)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (s_.link != Link::Up || !s_.hostOnline) return false;
+        if (recording_) return false;
+    }
+    maxMs_ = maxMs;
+    recording_ = true;      // the capture task sends the "voice" header itself
+    return true;
+}
+
+void Core::stopVoice()
+{
+    recording_ = false;     // the capture task sends "end"
+}
+
+void Core::captureTask()
+{
+    // Internal (DMA-capable) memory for the codec read and the outgoing frame; PSRAM would
+    // work for the frame but not for the read.
+    int16_t *pcm = (int16_t *)heap_caps_malloc(MIC_SAMPLES_PER_BLOCK * sizeof(int16_t),
+                                              MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint8_t *frame = (uint8_t *)heap_caps_malloc(8 + MIC_SAMPLES_PER_BLOCK / 2,
+                                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!pcm || !frame) {
+        ESP_LOGE(TAG, "no internal memory for capture buffers");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    for (;;) {
+        if (!recording_) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        if (!device_mic::acquire()) {
+            recording_ = false;
+            setStage(Stage::Error, "microphone busy");
+            continue;
+        }
+
+        int id;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            id = nextId_++;
+            s_.reqId = id;
+            s_.micOk = device_mic::ok();
+            s_.transcript[0] = 0;
+            s_.question[0] = 0;
+            s_.reply[0] = 0;
+            s_.replyDone = false;
+            s_.error[0] = 0;
+            s_.framesSent = 0;
+            s_.recMs = 0;
+            s_.level = 0;
+            s_.stage = Stage::Recording;
+            askStartMs_ = nowMs();
+            bump();
+        }
+
+        // Header first, then frames with the same id, then "end" - the host keys its capture
+        // buffer on that id and drops frames from an abandoned utterance.
+        const device_voice::Prefs vp = device_voice::get();
+        char hdr[192];
+        snprintf(hdr, sizeof(hdr),
+                 "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1,\"tts\":%s,"
+                 "\"lang\":\"%s\",\"outLang\":\"%s\",\"voice\":\"%s\"}",
+                 id, device_mic::SAMPLE_RATE, mode() == AnswerMode::TextAndVoice ? "true" : "false",
+                 vp.inLang, vp.outLang, vp.voice);
+        queueJson(hdr);
+
+        askbot::AdpcmState adpcm;
+        uint16_t seq = 0;
+        const uint32_t t0 = nowMs();
+        uint32_t sent = 0;
+
+        while (recording_) {
+            if (!device_mic::read(pcm, MIC_SAMPLES_PER_BLOCK * sizeof(int16_t))) {
+                ESP_LOGW(TAG, "codec read failed");
+                break;
+            }
+
+            int32_t peak = 0;
+            for (size_t i = 0; i < MIC_SAMPLES_PER_BLOCK; ++i) {
+                const int32_t v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+                if (v > peak) peak = v;
+            }
+
+            const size_t blockLen = askbot::EncodeAdpcmBlock(pcm, MIC_SAMPLES_PER_BLOCK, &adpcm, frame + 4);
+            const size_t frameLen = askbot::BuildMicFrame((uint8_t)id, seq++, frame + 4, blockLen, frame,
+                                                          8 + MIC_SAMPLES_PER_BLOCK / 2);
+            // Audio goes as a .NET byte[] straight to the host's chat actor, the same shape the
+            // answer audio uses in the other direction.
+            if (frameLen && queueFrame(frame, frameLen)) sent++;
+
+            const uint32_t elapsed = nowMs() - t0;
+            {
+                std::lock_guard<std::mutex> lock(m_);
+                s_.level = (float)peak / 32768.0f;
+                s_.recMs = elapsed;
+                s_.framesSent = sent;
+                if ((seq & 3) == 0) bump();
+            }
+            if (elapsed >= maxMs_) break;
+        }
+
+        recording_ = false;
+        device_mic::release();          // hand the codec back so the Chat app can record
+
+        char end[48];
+        snprintf(end, sizeof(end), "{\"t\":\"end\",\"id\":%d}", id);
+        queueJson(end);
+        ESP_LOGI(TAG, "capture #%d: %lu ms, %lu frames", id, (unsigned long)(nowMs() - t0),
+                 (unsigned long)sent);
+
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            s_.level = 0;
+            if (s_.stage == Stage::Recording) s_.stage = Stage::Sending;
+            bump();
+        }
+    }
 }
 
 // ---------------------------------------------------------------- user actions
 bool Core::queueJson(const char *json)
 {
-    if (!queue_ || !json) return false;
-    const size_t n = strnlen(json, TX_MAX - 1) + 1;
-    char *copy = (char *)malloc(n);
+    if (!json) return false;
+    // strlen, not strnlen with a 640 bound: every caller passes a real C string from a
+    // smaller local buffer, and gcc rejects a bound larger than the source it can see.
+    const size_t n = strlen(json);
+    if (n + 1 > TX_MAX) return false;
+    return queueItem((const uint8_t *)json, n + 1, false);   // include the terminator
+}
+
+bool Core::queueFrame(const uint8_t *data, size_t len)
+{
+    return queueItem(data, len, true);
+}
+
+bool Core::queueItem(const uint8_t *data, size_t len, bool binary)
+{
+    if (!queue_ || !data || len == 0) return false;
+    uint8_t *copy = (uint8_t *)malloc(len);
     if (!copy) return false;
-    memcpy(copy, json, n - 1);
-    copy[n - 1] = 0;
-    if (xQueueSend((QueueHandle_t)queue_, &copy, 0) != pdPASS) {
+    memcpy(copy, data, len);
+
+    TxItem item{copy, (uint16_t)len, binary};
+    if (xQueueSend((QueueHandle_t)queue_, &item, 0) != pdPASS) {
         free(copy);
         std::lock_guard<std::mutex> lock(m_);
         s_.dropped++;
@@ -233,6 +397,29 @@ void Core::onMessage(const char *json)
         return;
     }
 
+    if (strcmp(type, "cmd") == 0) {
+        // Host-driven control, the same idea as the Chat app's "C" commands: lets a PC start an
+        // utterance or ask a question without anyone touching the watch.
+        const cJSON *c = cJSON_GetObjectItem(js, "cmd");
+        const char *cmd = cJSON_IsString(c) ? c->valuestring : "";
+        if (strcmp(cmd, "talk") == 0) {
+            const cJSON *ms = cJSON_GetObjectItem(js, "ms");
+            const uint32_t d = cJSON_IsNumber(ms) ? (uint32_t)ms->valueint : 3000;
+            ESP_LOGI(TAG, "host asked for a %lu ms capture", (unsigned long)d);
+            startVoice(d);
+        } else if (strcmp(cmd, "text") == 0) {
+            const cJSON *tx = cJSON_GetObjectItem(js, "text");
+            if (cJSON_IsString(tx)) sendText(tx->valuestring);
+        } else if (strcmp(cmd, "cancel") == 0) {
+            stopVoice();
+            cancel();
+        } else {
+            ESP_LOGW(TAG, "unknown cmd '%s'", cmd);
+        }
+        cJSON_Delete(js);
+        return;
+    }
+
     if (strcmp(type, "answer") != 0) {
         ESP_LOGW(TAG, "unknown message type '%s'", type);
         cJSON_Delete(js);
@@ -245,7 +432,17 @@ void Core::onMessage(const char *json)
     const char *text = cJSON_IsString(tx) ? tx->valuestring : nullptr;
 
     std::lock_guard<std::mutex> lock(m_);
-    if (strcmp(stage, "think") == 0) {
+    if (strcmp(stage, "rec") == 0) {
+        s_.stage = Stage::Recording;
+    } else if (strcmp(stage, "stt") == 0) {
+        // Without text: transcribing. With text: what the host heard, which is worth showing
+        // even when the answer is still coming.
+        if (text && *text) {
+            snprintf(s_.transcript, sizeof(s_.transcript), "%s", text);
+            snprintf(s_.question, sizeof(s_.question), "%s", text);
+        }
+        s_.stage = Stage::Stt;
+    } else if (strcmp(stage, "think") == 0) {
         s_.stage = Stage::Think;
     } else if (strcmp(stage, "reply") == 0) {
         const cJSON *seq = cJSON_GetObjectItem(js, "seq");
@@ -481,10 +678,12 @@ void Core::linkTask()
         while (client.associated()) {
             if (!client.Poll(100)) break;
 
-            char *json = nullptr;
-            while (xQueueReceive((QueueHandle_t)queue_, &json, 0) == pdPASS) {
-                const bool ok = client.TellAs(LOCAL_ACTOR, CHAT_ACTOR, json);
-                free(json);
+            TxItem item{};
+            while (xQueueReceive((QueueHandle_t)queue_, &item, 0) == pdPASS) {
+                const bool ok = item.binary
+                    ? client.TellBytesAs(LOCAL_ACTOR, CHAT_ACTOR, item.data, item.len)
+                    : client.TellAs(LOCAL_ACTOR, CHAT_ACTOR, (const char *)item.data);
+                free(item.data);
                 std::lock_guard<std::mutex> lock(m_);
                 if (ok) s_.sent++;
                 else    s_.dropped++;

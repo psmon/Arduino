@@ -18,7 +18,7 @@
 namespace askbot {
 
 enum class Link : uint8_t { Down, WifiConnecting, WifiFailed, Associating, Up };
-enum class Stage : uint8_t { Idle, Sending, Think, Reply, Speaking, Error };
+enum class Stage : uint8_t { Idle, Recording, Sending, Stt, Think, Reply, Speaking, Error };
 
 /// What the host should send back for an answer.
 enum class AnswerMode : uint8_t { TextOnly = 0, TextAndVoice = 1 };
@@ -34,6 +34,11 @@ struct Snapshot {
 
     Stage stage = Stage::Idle;
     int   reqId = 0;
+    bool  micOk = false;        // the codec opened at least once
+    float level = 0;            // 0..1 input level while recording
+    uint32_t recMs = 0;         // how long the current capture has run
+    uint32_t framesSent = 0;    // microphone frames pushed to the host
+    char  transcript[256] = ""; // what the host heard
     char  question[256] = "";   // what we last asked
     char  reply[1200] = "";     // answer, chunks concatenated
     bool  replyDone = false;
@@ -59,6 +64,8 @@ public:
 
     // --- user actions, safe from the LVGL task ---
     bool sendText(const char *text);
+    bool startVoice(uint32_t maxMs = 30000);   // begin capture; false if the link or codec is not ready
+    void stopVoice();                          // end capture -> host runs STT -> chat
     void cancel();
     void newChat();
     void clear();
@@ -72,10 +79,13 @@ public:
     // internal (public for the task trampolines)
     void linkTask();
     void playTask();
+    void captureTask();
 
 private:
     Core() = default;
     bool queueJson(const char *json);
+    bool queueFrame(const uint8_t *data, size_t len);   // microphone audio, sent as byte[]
+    bool queueItem(const uint8_t *data, size_t len, bool binary);
     void onMessage(const char *json);
     void onSpeechFrame(const uint8_t *data, size_t len);
     void setStage(Stage stage, const char *error = nullptr);
@@ -94,6 +104,12 @@ private:
     // says the utterance is complete. Two buffers, because the next answer's frames
     // start arriving while the current one is still playing - the Chat app learned
     // that the hard way (one buffer truncated a 17 s answer to 3.6 s).
+    // Microphone capture: the codec is a shared device service (device_mic), held only while
+    // recording so the Chat app can record too.
+    void    *captureTask_ = nullptr;   // TaskHandle_t
+    volatile bool recording_ = false;
+    uint32_t maxMs_ = 30000;
+
     void    *spk_ = nullptr;        // esp_codec_dev_handle_t, opened lazily
     void    *playTask_ = nullptr;   // TaskHandle_t
     uint8_t *spkBuf_[2] = {nullptr, nullptr};   // PCM16 @ 16 kHz

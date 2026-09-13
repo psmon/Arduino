@@ -120,7 +120,9 @@ public static class Program
         // Native AOT binary.
         var ask = system.ActorOf(AotProps.Of(() => new AskActor()), "ask");
         var announce = Arg(args, "--announce");
-        var chat = system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce, stt)), "chat");
+        var talkOnConnect = int.TryParse(Arg(args, "--talk"), out var talkValue) ? talkValue : 0;
+        var chat = system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce, stt, talkOnConnect)),
+            "chat");
         stt.Preload();
 
         Console.WriteLine($"AkkaHost up as akka.tcp://{sysName}@{advertise}:{port}");

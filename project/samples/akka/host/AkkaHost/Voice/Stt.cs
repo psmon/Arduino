@@ -26,11 +26,12 @@ public sealed class SttOptions
     /// </summary>
     public double SilencePeakDb { get; init; } = -45;
     /// <summary>
-    /// And the same for RMS. Measured on this board in a quiet room at the default 30 dB mic
-    /// gain: peak -46.8 dBFS, rms -58.9 dBFS. Speech sits far above both, so -50 leaves room
-    /// for someone talking quietly while still rejecting an empty room.
+    /// And the same for RMS, which is the one that actually separates the two cases. Measured
+    /// on this board at the default 30 dB gain: an empty room is rms -47 to -61 dBFS, while
+    /// someone speaking is -32 to -31. -45 sits in that gap. (-50 was too generous: a -47 dBFS
+    /// capture slipped through and whisper answered it with "[끝]".)
     /// </summary>
-    public double SilenceRmsDb { get; init; } = -50;
+    public double SilenceRmsDb { get; init; } = -45;
     public bool Enabled { get; init; } = true;
 }
 
