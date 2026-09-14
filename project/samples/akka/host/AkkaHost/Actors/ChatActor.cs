@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Akka.Actor;
 using Akka.Event;
+using AkkaHost.Agent;
 using AkkaHost.Chat;
 using AkkaHost.Voice;
 
@@ -26,12 +27,23 @@ public sealed class ChatActor : UntypedActor
     private readonly VoiceSynth? _voice;
     private readonly Stt? _stt;
 
+    /// <summary>
+    /// AskBot's own agent, or null when it is switched off or unavailable on this OS. The Chat app
+    /// deliberately keeps using the provider CLIs (netclaw and friends); AskBot drives the model
+    /// itself so its toolchain - local drives, the music on them - is ours to extend.
+    /// </summary>
+    private readonly AgentRunner? _agent;
+
     // Per-device state, keyed by the sender's address (one entry per board).
     private sealed class Device
     {
         public int Conversation = 1;
         public int RunningRequest;
         public bool WantsVoice;
+
+        /// <summary>What the device called itself in "hello": "askbot" for the Akka app,
+        /// "chat-app" for the BLE one. It decides which brain answers.</summary>
+        public string App = "?";
 
         // Output preferences, set per request from the device's Settings screen. Input and
         // output are deliberately separate: the watch may be spoken to in Korean and answer
@@ -77,12 +89,13 @@ public sealed class ChatActor : UntypedActor
     private readonly int _talkMs;
 
     public ChatActor(HostConfig config, VoiceSynth? voice = null, string? announce = null, Stt? stt = null,
-        int talkMs = 0)
+        int talkMs = 0, AgentRunner? agent = null)
     {
         _talkMs = talkMs;
         _config = config;
         _voice = voice;
         _stt = stt;
+        _agent = agent;
         _announce = string.IsNullOrWhiteSpace(announce) ? null : announce.Trim();
         _providers = new Dictionary<string, CliProvider>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, provider) in config.Providers)
@@ -94,6 +107,19 @@ public sealed class ChatActor : UntypedActor
 
     private CliProvider Provider =>
         _providers.TryGetValue(_config.DefaultProvider, out var provider) ? provider : _providers.Values.First();
+
+    /// <summary>AskBot gets the built-in agent when there is one; everything else gets the CLI.</summary>
+    private bool UsesAgent(Device device) => _agent != null && device.App.StartsWith("askbot", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What the device shows in its status line. The firmware keeps 24 bytes for this, so
+    /// the model's vendor prefix ("google/") is dropped rather than truncating the name itself.</summary>
+    private string BrainName(Device device)
+    {
+        if (!UsesAgent(device)) return Provider.Name;
+        var model = _agent!.Model;
+        var slash = model.LastIndexOf('/');
+        return "agent:" + (slash >= 0 ? model[(slash + 1)..] : model);
+    }
 
     protected override void OnReceive(object message)
     {
@@ -180,12 +206,14 @@ public sealed class ChatActor : UntypedActor
                 case "hello":
                     var name = root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
                         ? n.GetString() : "?";
-                    _log.Info("device {0} said hello as {1}", sender.Path.Address, name);
+                    device.App = name ?? "?";
+                    _log.Info("device {0} said hello as {1}, answered by {2}", sender.Path.Address, name,
+                        BrainName(device));
                     Tell(sender, Json.Write(writer =>
                     {
                         writer.WriteString("t", "hostinfo");
                         writer.WriteString("host", Environment.MachineName);
-                        writer.WriteString("provider", Provider.Name);
+                        writer.WriteString("provider", BrainName(device));
                         // The device only offers the voice toggle when the host can
                         // actually speak, same rule as the BLE app.
                         writer.WriteBoolean("tts", _voice?.Available == true);
@@ -254,6 +282,9 @@ public sealed class ChatActor : UntypedActor
 
                 case "newsession":
                     device.Cancel?.Cancel();
+                    // The CLI providers key their history off the session name, so a new number is
+                    // a new conversation; the agent holds its history in memory and is told.
+                    _agent?.Reset($"askbot-{Sanitize(key)}-{device.Conversation}");
                     device.Conversation++;
                     _log.Info("device {0} starts conversation {1}", sender.Path.Address, device.Conversation);
                     Tell(sender, Json.Write(writer =>
@@ -292,15 +323,25 @@ public sealed class ChatActor : UntypedActor
         Tell(target, Stage("think", id));
 
         var provider = Provider;
+        var agent = UsesAgent(device) ? _agent : null;
+        // The watch's Settings screen picks the speaking language; the answer is written in it too,
+        // so what is shown and what is spoken are the same words.
+        var outLanguage = device.OutLanguage ?? _voice?.LanguageId;
         var session = $"askbot-{Sanitize(key)}-{device.Conversation}";
-        var styled = _config.ReplyStyle.Length > 0 ? _config.ReplyStyle + "\n\n" + prompt : prompt;
+        // The agent carries its own system prompt, and a CLI that echoes instructions back (the
+        // loopback provider) would have the watch read them aloud.
+        var styled = agent == null && provider.UseReplyStyle && _config.ReplyStyle.Length > 0
+            ? _config.ReplyStyle + "\n\n" + prompt
+            : prompt;
         var self = Self;
 
         _ = Task.Run(async () =>
         {
             try
             {
-                var answer = await provider.AskAsync(styled, session, cancel.Token);
+                var answer = agent != null
+                    ? await agent.AskAsync(prompt, session, cancel.Token, outLanguage)
+                    : await provider.AskAsync(styled, session, cancel.Token);
                 if (!cancel.IsCancellationRequested) self.Tell(new Answered(key, id, answer, target));
             }
             catch (OperationCanceledException)

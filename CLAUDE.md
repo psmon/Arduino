@@ -167,13 +167,29 @@ byte stream rather than IP. The device's transport swapped from `MakeTcpStream()
   `ulong.MaxValue`; string = serializer 17 / manifest `S`; byte[] = serializer 4; audio frames are
   `0xA6 | id | seq(LE16) | ADPCM block`) are in `project/samples/akka/PROTOCOL.md` — read it before touching
   `cpp/src/akka_wire.cpp`.
+- **AskBot has its own agent; Chat keeps the CLIs.** `host/AkkaHost/Agent/` is an OpenAI-compatible tool loop
+  (`ChatActor` routes a device that says `hello` as `askbot` to it, everything else to `CliProvider`). Default is
+  LM Studio at `https://a1.webnori.com`, model `google/gemma-4-e4b`, **keyless** — and it does support **native
+  tool calling**, checked before writing anything: `tools` up, `finish_reason: "tool_calls"` back. So do *not*
+  copy AgentZeroLite's GBNF-grammar/`{"tool":…}` parsing; that exists only because its local llama.cpp path has
+  no tool calls. Tools: `list_drives`/`list_dir`/`find_files` (read-only, confined to `Agent.Roots`, empty = every
+  fixed drive) and `find_music`/`play_music`/`stop_music`/`now_playing` over `Agent.MusicRoot`
+  (`E:\music\favorite-music`, files named `Artist-NN-Title.mp3`). A tool whose `Available` is false is never
+  described to the model. Console harness: `--ask "…"`, `--play <query>`, `--agent-url/--agent-model`, `--no-agent`.
+  Three things measured here: **MCI is dead** on Windows 11 (`open … type mpegvideo` → `MCIERR_CANNOT_LOAD_DRIVER`
+  277), so playback is WinRT `MediaPlayer` behind `IMusicPlayer` (non-Windows gets `UnsupportedMusicPlayer` and the
+  music tools vanish; the host build is Windows-only regardless). **`DriveInfo.IsReady` blocks for seconds** on
+  this machine's phantom F/H/X/Y/Z letters — `list_drives` took 147 s until each drive got its own task with a
+  700 ms deadline plus caching (now 1.0 s). And **gemma-4-e4b follows the tool output's language**, answering
+  Korean questions in English and reading `C:` as "C colon", until the prompt names the target language outright —
+  which is the watch's Settings → Speak choice, so shown text and spoken text match.
 - **Spoken answers work** with **SuperTonic-3** (four ONNX graphs via `Microsoft.ML.OnnxRuntime`; no Python, no
   COM, so it survives AOT where `System.Speech` cannot). The model is the one AgentZeroLite already installed at
   `%LOCALAPPDATA%\AgentZeroLite\models\supertonic` — **never download it**; absent model = `tts:false` in
   `hostinfo` and text-only answers. The host resamples 44.1k→16k itself (no NAudio: its resamplers pull in Media
   Foundation/COM), encodes IMA ADPCM and sends one block per `byte[]` message. Quick check:
   `AkkaHost.exe --speak "…" --out hello.wav`.
-- **Microphone → STT works** (Chat app's mic; AskBot has no mic button yet). `voice` / `0xA5` frames / `end` →
+- **Microphone → STT works** from both apps (each has its own hold-to-talk button). `voice` / `0xA5` frames / `end` →
   ADPCM decode into one buffer → **whisper.cpp** via Whisper.net using the installed
   `~/.ollama/models/agentzero/whisper/ggml-small.bin` (**never download**). Two numbers that matter, both
   measured here: whisper's default thread count made a 4.1 s capture take **25.6 s**; pinned to

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AkkaHost.Agent;
 using AkkaHost.Voice;
 
 namespace AkkaHost.Chat;
@@ -42,6 +43,15 @@ public sealed class HostConfig
     public VoiceOptions Voice { get; private set; } = new();
     /// <summary>Bound from the "Stt" section; defaults point at the installed Whisper models.</summary>
     public SttOptions Stt { get; private set; } = new();
+    /// <summary>
+    /// Bound from the "Agent" section: AskBot's own LLM agent. The Chat app keeps using the
+    /// provider CLIs above; this is the toolchain AskBot drives itself.
+    /// </summary>
+    public AgentOptions Agent { get; private set; } = new();
+
+    /// <summary>Command-line overrides for the agent (<c>--agent-url</c>, <c>--agent-model</c>,
+    /// <c>--no-agent</c>), applied after the file is read.</summary>
+    public void OverrideAgent(Func<AgentOptions, AgentOptions> change) => Agent = change(Agent);
 
     public bool TrySetDefaultProvider(string name)
     {
@@ -83,6 +93,9 @@ public sealed class HostConfig
         if (document.RootElement.TryGetProperty("Stt", out var stt) && stt.ValueKind == JsonValueKind.Object)
             config.Stt = ReadStt(stt);
 
+        if (document.RootElement.TryGetProperty("Agent", out var agent) && agent.ValueKind == JsonValueKind.Object)
+            config.Agent = ReadAgent(agent);
+
         if (chat.TryGetProperty("Providers", out var providers) && providers.ValueKind == JsonValueKind.Object)
         {
             foreach (var entry in providers.EnumerateObject())
@@ -118,6 +131,33 @@ public sealed class HostConfig
             ? srValue
             : -45,
     };
+
+    private static AgentOptions ReadAgent(JsonElement element)
+    {
+        var defaults = new AgentOptions();
+        return new AgentOptions
+        {
+            Enabled = !element.TryGetProperty("Enabled", out var enabled) || enabled.ValueKind != JsonValueKind.False,
+            Provider = Str(element, "Provider") ?? defaults.Provider,
+            BaseUrl = Str(element, "BaseUrl") ?? defaults.BaseUrl,
+            Model = Str(element, "Model") ?? defaults.Model,
+            ApiKey = Str(element, "ApiKey") ?? defaults.ApiKey,
+            Temperature = element.TryGetProperty("Temperature", out var temp) && temp.TryGetDouble(out var tempValue)
+                ? tempValue
+                : defaults.Temperature,
+            MaxTokens = element.TryGetProperty("MaxTokens", out var tok) && tok.TryGetInt32(out var tokValue)
+                ? tokValue
+                : defaults.MaxTokens,
+            MaxSteps = element.TryGetProperty("MaxSteps", out var steps) && steps.TryGetInt32(out var stepValue)
+                ? stepValue
+                : defaults.MaxSteps,
+            TimeoutSec = element.TryGetProperty("TimeoutSec", out var t) && t.TryGetInt32(out var timeout)
+                ? timeout
+                : defaults.TimeoutSec,
+            MusicRoot = Str(element, "MusicRoot") ?? defaults.MusicRoot,
+            Roots = StrList(element, "Roots"),
+        };
+    }
 
     private static ProviderConfig ReadProvider(JsonElement element) => new()
     {

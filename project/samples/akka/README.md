@@ -37,6 +37,7 @@ Neither firmware app needed changing for that, and there is no WiFi anywhere in 
 | Microphone → STT (Whisper) | **verified on hardware** from both apps - AskBot has its own hold-to-talk button |
 | Voice settings on the watch (listen / speak / voice) | **verified on hardware**: `spoke #1 as M2/en` |
 | Claude HUD app served by the same host | **verified on hardware**: `rx S 205 bytes -> ok` |
+| AskBot's own agent (LLM + tools on this PC) | **verified**: `find_music` → `play_music` plays, `list_drives` answers in Korean; the watch is routed to it (`said hello as askbot, answered by agent:gemma-4-e4b`) |
 
 ```powershell
 pwsh -File project/samples/akka/run_test.ps1        # framework-dependent host
@@ -204,6 +205,73 @@ AkkaHost.exe --speak "Hello" --voice M2 --lang en --out m2.wav   # try a combina
 AkkaHost.exe --cmd '{"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"}'   # set from the PC
 ```
 
+## AskBot's own agent
+
+The Chat app talks to whichever agent CLI is installed — netclaw, `claude`, a script — and those
+are whole agents in their own right. AskBot instead drives a model directly, so its toolchain is
+ours to extend: the watch asks for something on this PC and the agent does it.
+
+```
+watch  --"내 음악 조회해 재생"-->  ChatActor  -->  AgentRunner
+                                                  |  find_music {"query":""}      -> 19 tracks
+                                                  |  play_music {"query":""}      -> now playing …
+                                                  v
+                                        "이문세 - 사랑은 늘 도망가를 재생합니다."
+```
+
+Two tool families to begin with, both acting on this machine:
+
+| tool | what it does |
+|---|---|
+| `list_drives` / `list_dir` / `find_files` | read-only exploration of the local drives |
+| `find_music` / `play_music` / `stop_music` / `now_playing` | the library under `MusicRoot` (`E:\music\favorite-music`), played on the PC's speakers |
+
+**Native tool calling, not a grammar.** AgentZeroLite constrains its local llama.cpp with a GBNF
+grammar and parses one `{"tool":…,"args":…}` object per turn, because that path has no tool-call
+support. The endpoint here does: `POST /v1/chat/completions` with `tools` comes back with
+`finish_reason: "tool_calls"` and a real `tool_calls` array, so this is the standard loop —
+assistant asks, one `role:"tool"` message per call id, repeat up to `MaxSteps`. That was checked
+against the endpoint before any of it was written, because it decides the whole design.
+
+**The default model is LM Studio behind `https://a1.webnori.com`** serving `google/gemma-4-e4b`,
+keyless. `--agent-url` / `--agent-model` / `Agent.ApiKey` point it at any other OpenAI-compatible
+endpoint, LM Studio or OpenAI itself.
+
+Three things a 4B model needed telling, each found by running it:
+
+- **Answer language.** Tool results are English, and the model followed *them*, answering a Korean
+  question in English. Naming the language works where "reply in the user's language" did not — and
+  the language is the watch's own Settings → Speak choice, so what is shown is what is spoken.
+- **Don't respell.** It translated Korean song titles and read `C:` out as "C colon", which
+  produces a title that is in nobody's library.
+- **Unavailable tools are never offered.** A tool whose `Available` is false is left out of the
+  request, so the model cannot promise playback on a host that has no speaker backend.
+
+**OS branch.** Everything except playing a file is portable; playback sits behind `IMusicPlayer`,
+and the Windows implementation is WinRT's `MediaPlayer`. winmm's MCI was the first attempt and is
+dead on Windows 11 — `open "…" type mpegvideo` returns `MCIERR_CANNOT_LOAD_DRIVER` (277), since
+there is no MCI mp3 driver any more. On a non-Windows host the factory returns
+`UnsupportedMusicPlayer`, the music tools disappear, and the host says so instead of half-working.
+The host build is Windows-only for now anyway (`net10.0-windows10.0.19041.0`, for the WinRT BLE
+central); AskBot's agent on other platforms is a later job.
+
+**Drives, and the 147-second answer.** The first `list_drives` took 147 s: this machine has five
+letters (F, H, X, Y, Z) pointing at media and shares that are not there, and `DriveInfo.IsReady`
+on one of those blocks for seconds — and it walked them twice. Now each drive is probed on its own
+task against a 700 ms deadline, whatever misses it is reported as "not responding", and the result
+is cached. Same answer, 1.0 s.
+
+Reading is confined to `Agent.Roots` (empty = every fixed drive) and nothing writes, because an
+agent answering a watch has no business editing files, and because "look at my files" should not
+be talkable into a profile directory.
+
+Both halves are testable from the console with no watch in the room:
+
+```powershell
+dotnet run --project AkkaHost/AkkaHost.csproj -- --ask "내 음악에 이문세 노래 뭐 있어?"
+dotnet run --project AkkaHost/AkkaHost.csproj -- --play 이문세     # plays, then prints the position
+```
+
 ## Why BLE and not WiFi
 
 WiFi worked - the watch associated four seconds after power-on - and then tore the screen.
@@ -251,6 +319,12 @@ host/                        .NET 10 + Akka 1.6 host for both watch apps
     Actors/AskActor.cs       echo actor (protocol smoke test)
     Actors/ChatActor.cs      the device-facing conversation actor
     Chat/CliProvider.cs      runs netclaw / claude / a script as a child process
+    Agent/LlmClient.cs       OpenAI-compatible chat + tool calling (LM Studio, OpenAI)
+    Agent/AgentRunner.cs     AskBot's agent: the tool loop, history, the system prompt
+    Agent/AgentTool.cs       one tool: name, JSON Schema, invoke, availability
+    Agent/Tools/FileTools.cs local drives, directories, file search (read-only, rooted)
+    Agent/Tools/MusicTools.cs the music library and its transport controls
+    Agent/Os/MusicPlayer.cs  IMusicPlayer: WinRT MediaPlayer on Windows, nothing elsewhere
     Chat/HostConfig.cs       appsettings.json via JsonDocument (AOT-safe)
     Chat/Json.cs             tiny writer + UTF-8-safe chunking
     Voice/SuperTonic.cs      SuperTonic-3 ONNX pipeline (ported, MIT, Supertone Inc)
@@ -302,6 +376,10 @@ BLE and serves both apps. Useful flags:
 | `--announce "…"` | say something to a device as soon as it connects (push notification, and the way to test screen + speaker without touching the watch) |
 | `--talk 4000` | ask the Chat app to record for 4 s on connect (tests the microphone path) |
 | `--cmd '{"cmd":…}'` | send a remote-control command on connect; repeatable |
+| `--ask "…"` | put one question to AskBot's agent from the console and exit (`--lang ko` fixes the answer language) |
+| `--play <query>` | play the best match from the music library, print the position, exit — playback with no model in the way |
+| `--agent-url … --agent-model …` | point the agent at another OpenAI-compatible endpoint / model |
+| `--no-agent` | switch the agent off; AskBot then answers through the chat CLI, like the Chat app |
 | `--speak … --voice M2 --lang en` | synthesize one sentence to a WAV and exit |
 | `--no-ble` | skip the BLE central; only network peers reach the host (what `run_test.ps1` uses) |
 | `--device claude-hud` | advertised name to connect to |
@@ -318,9 +396,8 @@ ChatHost does the same job for the Chat app alone, so run one or the other.
 ```
 
 **Device app** — build the firmware as usual from `../claude_hud_amoled`
-(`idf.py -p COM7 build flash`) after setting SSID, password and host IP in
-`idf.py menuconfig` → *AskBot (Akka remoting app)*. WiFi comes up the first time
-the app is opened, so the rest of the firmware stays BLE-only until then; the
+(`idf.py -p COM7 build flash`). Nothing to configure: AskBot rides the BLE link the
+firmware already has, so there is no SSID, no password and no host IP to set, and the
 existing claude_hud, Chat and Settings apps are untouched.
 
 ## Next steps
@@ -328,3 +405,4 @@ existing claude_hud, Chat and Settings apps are untouched.
 1. Re-check Native AOT now that WinRT and Whisper are in the picture (`-p:AkkaHostAot=true`).
 2. An on-screen keyboard (`lv_keyboard`) would retire the preset questions, now that speaking
    is the main way in.
+3. More agent tools, and a playback backend for non-Windows hosts so AskBot is not Windows-only.

@@ -186,12 +186,17 @@ on the wire it is a peer with an address, and the host talks to it as one.
 | `t` / `st` | JSON | meaning |
 |---|---|---|
 | `hostinfo` | `{"t":"hostinfo","host":"PC","provider":"netclaw","tts":true,"voice":"F1","outLang":"ko","voices":["F1",…],"sttReady":true,"stt":"whisper-small","chat":1,"v":1}` | answer to `hello` |
-| `answer` `think` | `{"t":"answer","st":"think","id":N}` | prompt handed to the chat CLI |
+| `answer` `think` | `{"t":"answer","st":"think","id":N}` | prompt handed to the brain that answers it |
 | `answer` `reply` | `{"t":"answer","st":"reply","id":N,"seq":i,"n":k,"text":"...","done":true}` | answer chunk; `seq` 0 starts a fresh answer, concatenate in order |
 | `answer` `session` | `{"t":"answer","st":"session","id":N,"n":k}` | conversation number changed |
 | `answer` `idle` | `{"t":"answer","st":"idle","id":N}` | nothing running (answer to `cancel`) |
 | `answer` `err` | `{"t":"answer","st":"err","id":N,"text":"..."}` | request failed |
 | `answer` `pong` | `{"t":"answer","st":"pong","id":N}` | answer to `ping` |
+
+`provider` names whatever answers this device, and the device only displays it: a chat CLI
+(`netclaw`, `claude`, `echo`) for the Chat app, or `agent:<model>` when AskBot is served by the
+host's own agent. The firmware keeps 24 bytes for the field, so the model's vendor prefix is
+dropped (`google/gemma-4-e4b` → `agent:gemma-4-e4b`).
 
 Chunking is UTF-8 safe and defaults to 400 bytes (`Chat.ChunkBytes`), well under
 the frame budget; the limit exists because the device appends into a fixed buffer

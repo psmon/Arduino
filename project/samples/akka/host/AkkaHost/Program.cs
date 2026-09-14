@@ -1,6 +1,7 @@
 using Akka.Actor;
 using Akka.Configuration;
 using AkkaHost.Actors;
+using AkkaHost.Agent;
 using AkkaHost.Ble;
 using AkkaHost.Chat;
 using AkkaHost.Hud;
@@ -41,9 +42,91 @@ public static class Program
             return 2;
         }
 
+        // AskBot's own agent, overridable from the command line so a different LM Studio box or
+        // model can be tried without editing appsettings.json.
+        config.OverrideAgent(agent => agent with
+        {
+            Enabled = agent.Enabled && !HasFlag(args, "--no-agent"),
+            BaseUrl = Arg(args, "--agent-url") ?? agent.BaseUrl,
+            Model = Arg(args, "--agent-model") ?? agent.Model,
+            ApiKey = Arg(args, "--agent-key") ?? agent.ApiKey,
+        });
+
         using var voice = new VoiceSynth(config.Voice,
             (level, message) => Console.WriteLine($"[voice/{level}] {message}"));
         using var stt = new Stt(config.Stt, (level, message) => Console.WriteLine($"[stt/{level}] {message}"));
+
+        // The agent runs the tools on this PC, so it only exists where those tools can: the host
+        // is a Windows build today (WinRT BLE, winmm playback) and says so rather than half-working.
+        using var agent = config.Agent.Enabled && OperatingSystem.IsWindows()
+            ? new AgentRunner(config.Agent, (level, message) => Console.WriteLine($"[agent/{level}] {message}"))
+            : null;
+        if (config.Agent.Enabled && agent == null)
+            Console.Error.WriteLine("agent: unsupported OS, AskBot falls back to the chat CLI");
+
+        // Playback on its own, with no model in the way: plays the best match, waits, and prints
+        // the position so a silent speaker can be told apart from a track that never started.
+        //   AkkaHost.exe --play 이문세
+        var playQuery = Arg(args, "--play");
+        if (playQuery != null)
+        {
+            var player = Agent.Os.MusicPlayerFactory.Create();
+            var library = new Agent.Tools.MusicLibrary(config.Agent.MusicRoot);
+            Console.WriteLine($"library {library.Root}: {library.Tracks.Count} tracks, player {player.Status}");
+            var hits = library.Search(playQuery);
+            if (hits.Count == 0)
+            {
+                Console.Error.WriteLine($"nothing matches '{playQuery}'");
+                return 3;
+            }
+            if (!player.Play(hits[0].Path, out var playError))
+            {
+                Console.Error.WriteLine($"could not play {hits[0].Display}: {playError}");
+                return 4;
+            }
+            Console.WriteLine($"playing {hits[0].Display}");
+            for (var i = 0; i < 5; i++)
+            {
+                Thread.Sleep(1000);
+                var (position, length) = player.Progress;
+                Console.WriteLine($"  {position} / {length} ms");
+            }
+            player.Stop();
+            return 0;
+        }
+
+        // One agent question from the console, no watch and no BLE needed:
+        //   AkkaHost.exe --ask "내 음악 조회해 재생"
+        var askText = Arg(args, "--ask");
+        if (askText != null)
+        {
+            if (agent == null)
+            {
+                Console.Error.WriteLine("agent is disabled (see the Agent section of appsettings.json)");
+                return 3;
+            }
+            Console.WriteLine($"agent: {agent.Model} at {agent.Endpoint}");
+            Console.WriteLine($"tools: {string.Join(", ", agent.Tools.Select(t => t.Name))}");
+            try
+            {
+                var answer = agent.AskAsync(askText, Arg(args, "--session") ?? "console",
+                    CancellationToken.None, Arg(args, "--lang")).GetAwaiter().GetResult();
+                Console.WriteLine($"<- {answer}");
+                // Playback is in-process: exiting here would cut the music off mid-bar, which
+                // makes "play my music" look broken when it worked.
+                if (agent.NowPlaying != null && !Console.IsInputRedirected)
+                {
+                    Console.WriteLine($"playing {Path.GetFileName(agent.NowPlaying)} - Enter to stop.");
+                    Console.ReadLine();
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"agent failed: {ex.Message}");
+                return 4;
+            }
+        }
 
         // Quick standalone check of the speech path: synthesize to a WAV and exit.
         //   AkkaHost.exe --speak "안녕하세요" --out out.wav
@@ -124,14 +207,18 @@ public static class Program
         var ask = system.ActorOf(AotProps.Of(() => new AskActor()), "ask");
         var announce = Arg(args, "--announce");
         var talkOnConnect = int.TryParse(Arg(args, "--talk"), out var talkValue) ? talkValue : 0;
-        var chat = system.ActorOf(AotProps.Of(() => new ChatActor(config, voice, announce, stt, talkOnConnect)),
-            "chat");
+        var chat = system.ActorOf(
+            AotProps.Of(() => new ChatActor(config, voice, announce, stt, talkOnConnect, agent)), "chat");
         stt.Preload();
 
         Console.WriteLine($"AkkaHost up as akka.tcp://{sysName}@{advertise}:{port}");
         Console.WriteLine($"  /user/ask    echo actor (protocol smoke test)");
         Console.WriteLine($"  /user/chat   conversation actor, shared by AskBot and Chat");
         Console.WriteLine($"providers: {string.Join(", ", config.Providers.Keys)} (default: {config.DefaultProvider})");
+        Console.WriteLine(agent != null
+            ? $"AskBot agent: {agent.Model} at {agent.Endpoint}, " +
+              $"tools: {string.Join(", ", agent.Tools.Select(t => t.Name))}"
+            : "AskBot agent: off (AskBot answers through the chat CLI, like the Chat app)");
         Console.WriteLine($"voice out: {voice.Status}");
         Console.WriteLine($"  voices:  {string.Join(" ", voice.AvailableVoices)}");
         Console.WriteLine($"voice in:  {stt.Status}");
@@ -216,7 +303,8 @@ public static class Program
         }
         else
         {
-            Console.WriteLine("Commands: <text> asks the echo actor, 'ble' prints link stats, empty line quits.");
+            Console.WriteLine("Commands: <text> asks the echo actor, '? <text>' asks AskBot's agent, " +
+                              "'ble' prints link stats, empty line quits.");
             while (true)
             {
                 Console.Write("host> ");
@@ -231,6 +319,28 @@ public static class Program
                           $"sent={link.Sent} dropped={link.Dropped} lines={link.RxLines} frames={link.RxFrames} " +
                           $"tunnel={(tunnel?.Open == true ? "open" : "closed")} " +
                           $"toAkka={tunnel?.ToAkka ?? 0} toDevice={tunnel?.ToDevice ?? 0}");
+                    continue;
+                }
+
+                // Same agent the watch talks to, from the keyboard: the fastest way to see what a
+                // tool returned without holding the watch.
+                if (line.StartsWith("? "))
+                {
+                    if (agent == null)
+                    {
+                        Console.WriteLine("  agent is off");
+                        continue;
+                    }
+                    try
+                    {
+                        var answer = agent.AskAsync(line[2..], "console", CancellationToken.None)
+                            .GetAwaiter().GetResult();
+                        Console.WriteLine($"  <- {answer}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  agent failed: {ex.Message}");
+                    }
                     continue;
                 }
 

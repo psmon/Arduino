@@ -40,8 +40,10 @@ static const char *PRESETS[] = {
     "What time is it? Answer in one short sentence.",
     "지금 이 기기에서 액터 모델이 동작하고 있어? 한 문장으로.",
     "Tell me one short fact about the actor model.",
+    // The host's agent has tools on the PC; this one is a whole round trip you can hear.
+    "내 음악 조회해서 한 곡 재생해줘.",
 };
-static const char *PRESET_LABELS[] = { "time", "actor?", "fact" };
+static const char *PRESET_LABELS[] = { "time", "actor?", "fact", "music" };
 static constexpr int PRESET_COUNT = sizeof(PRESETS) / sizeof(PRESETS[0]);
 
 // Same circle-aware geometry as the Chat app: at a given y the usable half-width is

@@ -14,6 +14,7 @@ public sealed class CliProvider(string name, ProviderConfig config, Action<strin
 {
     public string Name => name;
     public string? Description => config.Description;
+    public bool UseReplyStyle => config.UseReplyStyle;
 
     // A chat CLI keeps per-session state on disk (netclaw holds an exclusive lock
     // on its session log), so two overlapping prompts on one session make the
