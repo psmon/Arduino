@@ -54,23 +54,33 @@ public:
         claude_hud::startBle();             // idempotent; whichever app got there first wins
         claude_hud::setFrameHook(frameHook);
 
+        // Wait for *subscribed*, not merely connected - which is what the comment above
+        // always said and what this loop did not do. A central is connected the moment the
+        // link is up, but it enables TX notifications only after service discovery and the
+        // CCCD write; on Windows that lands 1.3 s later. Opening the tunnel in between means
+        // the first ASSOCIATE is notified into a void, WriteAll gives up after its 200 ms of
+        // back-pressure retries, and the association is dropped and retried 5 s later. That
+        // cost a failed ASSOCIATE and ~5 s on every single connect.
         const int64_t deadline = esp_timer_get_time() / 1000 + timeout_ms;
         while (esp_timer_get_time() / 1000 < deadline) {
-            if (claude_hud::bleConnected()) {
+            if (claude_hud::bleSubscribed()) {
                 Drain();                    // start from a clean stream
                 open_ = true;
                 ESP_LOGI(TAG, "tunnel open, %d bytes per notification",
                          claude_hud::bleMaxPayload() - 1);
                 return true;
             }
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(50));  // 200 ms granularity added a quarter second for nothing
         }
+        ESP_LOGW(TAG, "central did not subscribe to TX within %d ms", timeout_ms);
         return false;
     }
 
     void Close() override { open_ = false; }
 
-    bool IsOpen() const override { return open_ && claude_hud::bleConnected(); }
+    // Same bar as Connect: a central that unsubscribes has stopped being reachable, even
+    // though the link is still up.
+    bool IsOpen() const override { return open_ && claude_hud::bleSubscribed(); }
 
     int Read(uint8_t *buf, size_t len, int timeout_ms) override
     {

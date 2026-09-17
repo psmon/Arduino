@@ -10,7 +10,13 @@ namespace claude_hud {
 void startBle();                                   // advertise as "claude-hud"; idempotent (apps call it from init())
 
 bool bleConnected();                               // a central is connected
+bool bleSubscribed();                              // ...and it has enabled TX notifications
 int  bleMaxPayload();                              // bytes per notification = negotiated MTU - 3 (>= 20)
+
+// bleConnected() alone is not enough to send on. A central is connected as soon as the link
+// is up, but it only subscribes to TX after it has discovered the service and written the
+// CCCD - on Windows that is well over a second later. Anything that notifies during that
+// window fails, so a sender that waits on bleConnected() will burn its first attempt.
 
 // Device -> host. One notification of up to bleMaxPayload() bytes. False when not connected, not subscribed,
 // or the controller has no free buffers right now (caller may retry after a short delay).

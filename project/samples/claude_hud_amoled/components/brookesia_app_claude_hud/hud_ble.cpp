@@ -241,6 +241,7 @@ static void hostTask(void *)
 }
 
 bool bleConnected() { return s_connHandle != BLE_HS_CONN_HANDLE_NONE; }
+bool bleSubscribed() { return bleConnected() && s_txSubscribed; }
 int  bleMaxPayload()
 {
     // Ask the stack rather than trusting the cached value: the MTU-exchange event can arrive before
