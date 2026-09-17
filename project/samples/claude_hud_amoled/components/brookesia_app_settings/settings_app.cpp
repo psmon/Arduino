@@ -11,6 +11,7 @@
 #include "nvs.h"
 #include "device_wifi.hpp"
 #include "device_voice.hpp"
+#include "device_power.hpp"
 #include "bsp/esp-bsp.h"
 #include "settings_app.hpp"
 #include "boot_button.hpp"
@@ -62,7 +63,8 @@ static void applyBrightness(int v)
     if (v > BRIGHT_MAX) v = BRIGHT_MAX;
     if (v == s_brightness) return;
     s_brightness = v;
-    bsp_display_brightness_set(v);
+    device_power::setBrightness(v);   // the screen service owns the live value, so an
+                                     // off/on cycle comes back to exactly this number
     nvs_handle_t nvs;
     if (nvs_open(NVS_NS, NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_u8(nvs, "bright", (uint8_t)v);
@@ -93,12 +95,12 @@ bool Settings::init(void)
 {
     // Runs at install time, i.e. at boot: restore the saved brightness even if nobody opens this app.
     loadBrightness();
-    bsp_display_brightness_set(s_brightness);
+    device_power::setBrightness(s_brightness);
     settings_app::startBootButton();
     // WiFi is a device-wide service, not AskBot's: bring it up at boot so any app
     // finds a live address, and so the BLE apps are unaffected either way.
     device_wifi::start();
-    ESP_UTILS_LOGI("Init: brightness restored to %d%%, BOOT button armed, wifi %s", s_brightness,
+    ESP_UTILS_LOGI("Init: brightness restored to %d%%, BOOT button armed (power key), wifi %s", s_brightness,
                    device_wifi::configured() ? "starting" : "off (no SSID)");
     return true;
 }
@@ -339,7 +341,7 @@ void Settings::buildUi(lv_obj_t *scr)
     lv_label_set_long_mode(_lblWifi, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(_lblWifi, LV_TEXT_ALIGN_CENTER, 0);
 
-    _lblHint = mkLabel(col, "The BOOT button also steps the volume:\nshort press up, long press down.",
+    _lblHint = mkLabel(col, "BOOT button: short press turns the screen\noff and on, hold 3 s to restart.",
                        &font_nanum_18, C_GRAY);
     lv_obj_set_width(_lblHint, W_COL - 16);
     lv_label_set_long_mode(_lblHint, LV_LABEL_LONG_WRAP);

@@ -93,13 +93,14 @@ components/brookesia_app_claude_hud/
   claude_hud_app.{hpp,cpp}           phone::App - starts BLE on init, builds the tile UI on run
   hud_state.{hpp,cpp}                session / limit model and cJSON parsing, behind a mutex
   hud_ble.cpp                        NimBLE NUS server, shared by every app
+  device_power.{hpp,cpp}             screen off/on (brightness 0 + paused LVGL worker) and restart
   assets/font_nanum_18.c             NanumGothic subset, built uncompressed on purpose (see below)
 components/brookesia_app_chat/
   chat_app.{hpp,cpp}                 hold-to-talk UI, conversation bubbles, answer-mode pill
   chat_core.{hpp,cpp}                protocol state, mic capture, ADPCM, speech playback
 components/brookesia_app_settings/
   settings_app.{hpp,cpp}             volume / mic gain / brightness sliders
-  boot_button.cpp                    BOOT (GPIO0) as the volume key
+  boot_button.cpp                    BOOT (GPIO0) as the power key: tap = screen off/on, 3 s = restart
 tools/  gen_icon*.py, gen_font.py, gen_mic_glyph.py
 pc/     ble_bridge.py and the HUD-only installer (superseded by ../amoled_chat_host)
 ```

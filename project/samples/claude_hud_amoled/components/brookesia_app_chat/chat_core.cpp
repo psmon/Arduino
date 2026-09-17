@@ -16,6 +16,7 @@
 #include "nvs.h"
 #include "hud_transport.hpp"
 #include "device_voice.hpp"
+#include "device_power.hpp"
 #include "device_mic.hpp"
 
 static const char *TAG = "chat_core";
@@ -512,6 +513,13 @@ bool Core::onLine(const char *line, size_t len)
             if (cJSON_IsNumber(v)) setMicGain(v->valueint); else ok = false;
         } else if (!strcmp(c, "tone")) {
             playTestTone();
+        } else if (!strcmp(c, "screen")) {
+            // {"cmd":"screen","on":false} - omit "on" to toggle. The BOOT button is the normal way;
+            // this exists so a PC can exercise the path without a finger on the case.
+            const cJSON *v = cJSON_GetObjectItem(js, "on");
+            device_power::setScreen(cJSON_IsBool(v) ? cJSON_IsTrue(v) : !device_power::screenOn());
+        } else if (!strcmp(c, "reboot")) {
+            device_power::reboot("host command");
         } else if (!strcmp(c, "voicecfg")) {
             // {"cmd":"voicecfg","in":"ko","out":"en","voice":"M2"} - any subset. The screen
             // is the normal way to change these; this exists so a PC can too.

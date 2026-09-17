@@ -1,4 +1,4 @@
-// BOOT (GPIO0) as a volume key. See boot_button.cpp for why one button carries both directions.
+// BOOT (GPIO0) as the power key: short press toggles the screen, a 3 s hold restarts. See boot_button.cpp.
 #pragma once
 
 namespace settings_app {

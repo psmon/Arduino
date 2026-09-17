@@ -115,6 +115,18 @@ Public repo `psmon/Arduino`, default branch `main`, `gh` CLI authenticated. Norm
   `WHOLE_ARCHIVE`; declare `waveshare/esp32_s3_touch_amoled_1_75c` in its `idf_component.yml` if it calls BSP
   functions. `main/main.cpp` stays untouched. Apps are statically linked → every change reflashes the whole app
   image (incremental build is 1–2 min).
+- **There is no software power-off, and one button carries what there is.** No PMIC and no soft-power latch
+  are exposed, so the chip runs until the battery is unplugged; `BSP_CAPS_BUTTONS` is 0 and the case's other
+  key is RESET wired to the chip's reset line, so BOOT (GPIO0) is the only key firmware can read. Since
+  2026-09-16 it is the **power key**: tap = screen off/on, hold 3 s = beep then `esp_restart()`
+  (`brookesia_app_settings/boot_button.cpp`, polled at 20 ms so it still answers when LVGL is wedged).
+  Volume moved off it to the Settings/HUD sliders. Screen off is `device_power.*` in
+  `brookesia_app_claude_hud` (bottom of the dependency chain, like `device_mic`): brightness 0 via
+  `bsp_display_brightness_set` **plus** `esp_lv_adapter_pause()` — pausing the worker also stops the touch
+  indev being polled, so a dark screen cannot be pressed by accident and the button is the only way back.
+  Every brightness slider now goes through `device_power::setBrightness` because `bsp_display_brightness_get`
+  round-trips through 0..255 and would lose a point per off/on cycle. `C {"cmd":"screen","on":false}` and
+  `C {"cmd":"reboot"}` do the same from the host; both verified on hardware.
 - **Transport is BLE only** (user decision: no WiFi/USB rx, no fallbacks; failures = warning log + INFO tile).
   PC side is `claude_hud_amoled/pc/`: `ble_bridge.py` keeps one BLE connection and serves
   `http://127.0.0.1:8765`; hooks/statusLine POST there; `install.ps1` merges settings.json (backup `.amoledbak`,

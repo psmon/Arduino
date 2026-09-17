@@ -10,6 +10,7 @@
 #include "esp_lib_utils.h"
 #include "bsp/esp-bsp.h"
 #include "claude_hud_app.hpp"
+#include "device_power.hpp"
 #include "hud_transport.hpp"
 
 #define APP_NAME "Claude HUD"
@@ -189,7 +190,7 @@ void ClaudeHud::tick()
 void ClaudeHud::brightnessCb(lv_event_t *e)
 {
     lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
-    bsp_display_brightness_set((int)lv_slider_get_value(slider));
+    device_power::setBrightness((int)lv_slider_get_value(slider));
 }
 
 // ---------------------------------------------------------------- UI build
@@ -291,7 +292,8 @@ void ClaudeHud::buildUi(lv_obj_t *scr)
     lv_obj_set_size(sl, 260, 16);
     lv_obj_align(sl, LV_ALIGN_TOP_MID, 0, 346);
     lv_slider_set_range(sl, 10, 100);
-    lv_slider_set_value(sl, 80, LV_ANIM_OFF);
+    lv_slider_set_value(sl, device_power::brightness(), LV_ANIM_OFF);   // the Settings app may have
+                                                                       // restored something else at boot
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_DIM), LV_PART_MAIN);
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_YELLOW), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_WHITE), LV_PART_KNOB);

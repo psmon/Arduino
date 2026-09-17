@@ -29,7 +29,7 @@ Preferred MTU 512 (`CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512`), so one write / one
 | `E` | HUD event (unchanged, from Claude Code hooks) | as before |
 | `H` | host hello, sent once when the link comes up | `{"host":"PCNAME","provider":"netclaw","stt":"whisper-small","sttReady":true,"tts":true,"chat":1,"v":3}` |
 | `A` | answer / progress for request `id` | see stages below |
-| `C` | remote control of the on-screen app (test aid) | `{"cmd":"talk","ms":5000}` · `{"cmd":"text","text":"..."}` · `{"cmd":"mode","voice":true}` · `{"cmd":"newchat"}` · `{"cmd":"clear"}` |
+| `C` | remote control of the on-screen app (test aid) | `{"cmd":"talk","ms":5000}` · `{"cmd":"text","text":"..."}` · `{"cmd":"mode","voice":true}` · `{"cmd":"newchat"}` · `{"cmd":"clear"}` · `{"cmd":"screen","on":false}` · `{"cmd":"reboot"}` |
 
 The greeting is one round trip and one direction only: host sends `H` on connect, the device answers `R hello`,
 and the host does **not** answer that with another `H`. Replying to the reply ping-pongs forever.
