@@ -164,9 +164,9 @@ void Core::captureTask()
         char hdr[192];
         snprintf(hdr, sizeof(hdr),
                  "{\"t\":\"voice\",\"id\":%d,\"fmt\":\"adpcm\",\"rate\":%d,\"ch\":1,\"tts\":%s,"
-                 "\"lang\":\"%s\",\"outLang\":\"%s\",\"voice\":\"%s\"}",
+                 "\"out\":\"%s\",\"lang\":\"%s\",\"outLang\":\"%s\",\"voice\":\"%s\"}",
                  id, device_mic::SAMPLE_RATE, mode() == AnswerMode::TextAndVoice ? "true" : "false",
-                 vp.inLang, vp.outLang, vp.voice);
+                 answerModeWire(mode()), vp.inLang, vp.outLang, vp.voice);
         queueJson(hdr);
 
         askbot::AdpcmState adpcm;
@@ -281,7 +281,9 @@ bool Core::sendText(const char *text)
     cJSON_AddStringToObject(js, "t", "text");
     cJSON_AddNumberToObject(js, "id", id);
     cJSON_AddStringToObject(js, "text", text);
+    // "tts" stays for hosts that predate "out": they treat PC mode as text only.
     cJSON_AddBoolToObject(js, "tts", mode() == AnswerMode::TextAndVoice);
+    cJSON_AddStringToObject(js, "out", answerModeWire(mode()));
     cJSON_AddStringToObject(js, "outLang", vp.outLang);
     cJSON_AddStringToObject(js, "voice", vp.voice);
     char *out = cJSON_PrintUnformatted(js);
@@ -390,7 +392,9 @@ void Core::onMessage(const char *json)
         snprintf(s_.provider, sizeof(s_.provider), "%s", cJSON_IsString(p) ? p->valuestring : "?");
         if (cJSON_IsNumber(c)) s_.chatNo = c->valueint;
         s_.hostTts = cJSON_IsTrue(cJSON_GetObjectItem(js, "tts"));
+        s_.hostPcOut = s_.hostTts && cJSON_IsTrue(cJSON_GetObjectItem(js, "pcOut"));
         if (!s_.hostTts) s_.mode = AnswerMode::TextOnly;   // nothing to speak with
+        if (!s_.hostPcOut && s_.mode == AnswerMode::TextAndPc) s_.mode = AnswerMode::TextAndVoice;
         s_.hostOnline = true;
         bump();
         cJSON_Delete(js);

@@ -145,13 +145,22 @@ void AskBot::presetEvent(lv_event_t *e)
 
 void AskBot::stopEvent(lv_event_t *) { Core::instance().cancel(); }
 
-// Text only, or text plus a spoken answer. The host synthesises with SuperTonic and
-// streams IMA ADPCM frames; the pill only appears when it reported a usable voice.
+// Tap to cycle: text only -> spoken on the watch -> spoken on the PC -> text only. The
+// host synthesises with SuperTonic; for the watch it streams IMA ADPCM frames, for the
+// PC it plays the answer on the PC's speakers and sends no audio. The pill only appears
+// when the host reported a usable voice, and PC is skipped when it did not offer it.
 void AskBot::modeEvent(lv_event_t *)
 {
+    using askbot::AnswerMode;
     Core &c = Core::instance();
-    c.setMode(c.mode() == askbot::AnswerMode::TextAndVoice ? askbot::AnswerMode::TextOnly
-                                                           : askbot::AnswerMode::TextAndVoice);
+    askbot::Snapshot s;
+    c.snapshot(s);
+    const bool pc = s.hostPcOut;
+    switch (c.mode()) {
+    case AnswerMode::TextOnly:     c.setMode(AnswerMode::TextAndVoice); break;
+    case AnswerMode::TextAndVoice: c.setMode(pc ? AnswerMode::TextAndPc : AnswerMode::TextOnly); break;
+    case AnswerMode::TextAndPc:    c.setMode(AnswerMode::TextOnly); break;
+    }
 }
 
 // The chat CLI owns the history (netclaw resumes by session id); this only asks the
@@ -347,9 +356,21 @@ void AskBot::refresh()
     // The voice toggle means nothing until the host says it can speak.
     if (s.hostTts) {
         lv_obj_remove_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
-        const bool voice = s.mode == askbot::AnswerMode::TextAndVoice;
-        lv_label_set_text(_lblMode, voice ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE);
-        lv_obj_set_style_text_color(_lblMode, lv_color_hex(voice ? C_PURPLE : C_GRAY), 0);
+        // Mute = text only, speaker = the watch speaks, "PC" = the PC speaks.
+        switch (s.mode) {
+        case askbot::AnswerMode::TextAndVoice:
+            lv_label_set_text(_lblMode, LV_SYMBOL_VOLUME_MAX);
+            lv_obj_set_style_text_color(_lblMode, lv_color_hex(C_PURPLE), 0);
+            break;
+        case askbot::AnswerMode::TextAndPc:
+            lv_label_set_text(_lblMode, "PC");
+            lv_obj_set_style_text_color(_lblMode, lv_color_hex(C_CYAN), 0);
+            break;
+        default:
+            lv_label_set_text(_lblMode, LV_SYMBOL_MUTE);
+            lv_obj_set_style_text_color(_lblMode, lv_color_hex(C_GRAY), 0);
+            break;
+        }
     } else {
         lv_obj_add_flag(_btnMode, LV_OBJ_FLAG_HIDDEN);
     }

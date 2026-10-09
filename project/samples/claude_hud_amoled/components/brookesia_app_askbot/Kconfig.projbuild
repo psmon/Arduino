@@ -41,7 +41,7 @@ menu "AskBot (Akka remoting app)"
 
     config ASKBOT_VOLUME
         int "Speaker volume for spoken answers (0-100)"
-        default 70
+        default 100
         range 0 100
         help
             The host synthesises answers with SuperTonic and streams them as IMA ADPCM

@@ -24,7 +24,7 @@ struct Snapshot {
     bool     hostOnline = false;       // H line received on this connection
     bool     bleConnected = false;
     bool     micOk = false;
-    int      volume = 70;              // speaker, 0..100
+    int      volume = 100;             // speaker, 0..100 (a value saved in NVS wins)
     int      micGain = 30;             // ES7210 input gain in dB, 0..60
     bool     hostTts = false;          // host reported a usable TTS voice in its hello
     int      chatNo = 1;               // which conversation the host has us on (1-based)

@@ -20,8 +20,15 @@ namespace askbot {
 enum class Link : uint8_t { Down, WifiConnecting, WifiFailed, Associating, Up };
 enum class Stage : uint8_t { Idle, Recording, Sending, Stt, Think, Reply, Speaking, Error };
 
-/// What the host should send back for an answer.
-enum class AnswerMode : uint8_t { TextOnly = 0, TextAndVoice = 1 };
+/// What the host should do with an answer besides sending the text: nothing, speak it
+/// on this watch, or speak it on the PC's own speakers (no audio crosses the link).
+enum class AnswerMode : uint8_t { TextOnly = 0, TextAndVoice = 1, TextAndPc = 2 };
+
+/// Wire name of an answer mode - the "out" field of every request.
+inline const char *answerModeWire(AnswerMode m)
+{
+    return m == AnswerMode::TextAndVoice ? "watch" : m == AnswerMode::TextAndPc ? "pc" : "off";
+}
 
 struct Snapshot {
     Link link = Link::Down;
@@ -51,6 +58,7 @@ struct Snapshot {
     // Spoken answer (SuperTonic on the host, ADPCM over Akka byte[] messages).
     AnswerMode mode = AnswerMode::TextOnly;
     bool     hostTts = false;   // host reported a usable voice in its hostinfo
+    bool     hostPcOut = false; // ...and that it can speak on the PC (hostinfo "pcOut")
     uint32_t speakMs = 0;       // length the host announced
     uint32_t speakGot = 0, speakWant = 0;   // frames decoded / announced
 };

@@ -176,7 +176,7 @@ on the wire it is a peer with an address, and the host talks to it as one.
 | `t` | JSON | meaning |
 |---|---|---|
 | `hello` | `{"t":"hello","name":"askbot","fw":"akka-1"}` | sent once per association |
-| `text` | `{"t":"text","id":N,"text":"...","tts":false,"outLang":"ko","voice":"F1"}` | a question |
+| `text` | `{"t":"text","id":N,"text":"...","tts":false,"out":"off","outLang":"ko","voice":"F1"}` | a question |
 | `cancel` | `{"t":"cancel","id":N}` | abandon the running answer |
 | `newsession` | `{"t":"newsession","id":N}` | move to a fresh conversation |
 | `ping` | `{"t":"ping"}` | liveness check |
@@ -185,7 +185,7 @@ on the wire it is a peer with an address, and the host talks to it as one.
 
 | `t` / `st` | JSON | meaning |
 |---|---|---|
-| `hostinfo` | `{"t":"hostinfo","host":"PC","provider":"netclaw","tts":true,"voice":"F1","outLang":"ko","voices":["F1",…],"sttReady":true,"stt":"whisper-small","chat":1,"v":1}` | answer to `hello` |
+| `hostinfo` | `{"t":"hostinfo","host":"PC","provider":"netclaw","tts":true,"pcOut":true,"voice":"F1","outLang":"ko","voices":["F1",…],"sttReady":true,"stt":"whisper-small","chat":1,"v":1}` | answer to `hello` |
 | `answer` `think` | `{"t":"answer","st":"think","id":N}` | prompt handed to the brain that answers it |
 | `answer` `reply` | `{"t":"answer","st":"reply","id":N,"seq":i,"n":k,"text":"...","done":true}` | answer chunk; `seq` 0 starts a fresh answer, concatenate in order |
 | `answer` `session` | `{"t":"answer","st":"session","id":N,"n":k}` | conversation number changed |
@@ -224,6 +224,23 @@ arriving while the current one is still playing.
 installed, so the device hides its voice toggle otherwise - the same degradation the
 BLE app applies.
 
+### Where the answer is spoken: `out`
+
+Every `text` and `voice` request also carries `"out"`, the watch's answer mode:
+
+| `out` | the host |
+|---|---|
+| `"off"` | sends the text only |
+| `"watch"` | sends the text, then the `speak` / frames / `speak_end` sequence above |
+| `"pc"` | sends the text only, and plays the answer on the **PC's own speakers** at the synthesizer's full rate - no audio crosses the link |
+
+`"tts"` is still sent (`true` exactly when `out` is `"watch"`), so a host that predates
+`out` treats PC mode as text only. A host that understands `out` says so with
+`"pcOut":true` in `hostinfo`; the device offers PC as a third choice only then, and falls
+back to `watch` if it was on PC and reconnects to a host without it. On the device the
+mode is the AskBot pill, tapped to cycle off -> watch -> PC. A newer question or a
+`cancel` stops PC playback the same way it stops a request.
+
 ### Why byte[] and not base64 in JSON
 
 Base64 costs a third more for nothing, and `ByteArraySerializer` (id 4) is a plain
@@ -251,7 +268,7 @@ them as .NET `byte[]` messages through the tunnel, and the same `ChatActor` hand
 
 | direction | message | meaning |
 |---|---|---|
-| device -> host | `{"t":"voice","id":N,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false}` | an utterance starts |
+| device -> host | `{"t":"voice","id":N,"fmt":"adpcm","rate":16000,"ch":1,"lang":"ko","tts":false,"out":"off"}` | an utterance starts |
 | device -> host | `0xA5 \| id(1) \| seq(2 LE) \| ADPCM block` | 60 ms of microphone audio each (960 samples) |
 | device -> host | `{"t":"end","id":N}` | utterance finished |
 | host -> device | `{"t":"answer","st":"rec","id":N}` | capture accepted |
